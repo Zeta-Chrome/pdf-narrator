@@ -128,7 +128,6 @@ Popup {
                 }
             }
             onCurrentTextChanged: {
-                console.log("Selected:", currentText);
             }
         }
     }
