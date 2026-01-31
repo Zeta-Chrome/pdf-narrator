@@ -1,22 +1,19 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import QtQuick.Effects
-import PDFNarrator
 
 Button {
-    id: root
-    Layout.fillWidth: true
-    Layout.fillHeight: true
+    id: root 
 
     property color iconColor: "#FF8F8F8F"
     property alias iconSource: icon.source
     property alias iconRotation: effect.rotation
+    property real buttonRadius: 0
 
     hoverEnabled: Qt.platform.os !== "android"
     background: Rectangle {
         color: root.pressed ? "#3FFFFFFF" : (root.hovered ? "#1FFFFFFF" : "#00000000")
-        radius: parent.width * Style.buttonRadiusFactor
+        radius: parent.width * root.buttonRadius 
     }
 
     Image {

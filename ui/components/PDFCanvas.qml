@@ -4,6 +4,7 @@ import PDFNarrator
 
 Item {
     id: root
+    property bool controlsVisible: true
 
     Image {
         id: pageImage
@@ -17,8 +18,19 @@ Item {
 
     BusyIndicator {
         anchors.centerIn: parent
-        running: true
+        running: false
+        visible: running
         width: parent.width * Style.busyIndicatorFactor
         height: width
+    }
+
+    IconButton {
+        id: playPause
+        anchors.centerIn: parent
+        iconSource: "qrc:/PDFNarrator/assets/images/pause.svg"
+        visible: root.controlsVisible 
+        width: parent.width * Style.busyIndicatorFactor
+        height: width
+        buttonRadius: 1.0
     }
 }

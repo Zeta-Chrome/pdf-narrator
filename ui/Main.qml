@@ -10,7 +10,7 @@ ApplicationWindow {
     title: "PDF Narrator"
     color: "#000000"
     
-    property bool controlsVisible: false
+    property bool controlsVisible: true 
     property int hideControlsDelay: 3000
 
     Component.onCompleted: {
@@ -30,12 +30,7 @@ ApplicationWindow {
     function showControls() {
         controlsVisible = true
         hideTimer.restart()
-    }
-
-    PDFCanvas {
-        id: pdfCanvas
-        anchors.fill: parent
-    }
+    } 
 
     MouseArea {
         anchors.fill: parent
@@ -49,6 +44,12 @@ ApplicationWindow {
         onClicked: {
             root.showControls()
         }
+    }
+
+    PDFCanvas {
+        id: pdfCanvas
+        anchors.fill: parent
+        controlsVisible: root.controlsVisible
     }
 
     TopControlBar {

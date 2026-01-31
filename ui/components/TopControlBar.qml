@@ -18,12 +18,18 @@ Rectangle {
             id: openPDF
             iconSource: "qrc:/PDFNarrator/assets/images/open_pdf.svg"
             onClicked: pdfDialog.open()
+            buttonRadius: Style.buttonRadiusFactor
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
 
         IconButton {
             id: openMusic
             iconSource: "qrc:/PDFNarrator/assets/images/open_music.svg"
             onClicked: musicDialog.open()
+            buttonRadius: Style.buttonRadiusFactor
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
 
         Row {
@@ -62,12 +68,18 @@ Rectangle {
         IconButton {
             id: toggleMusic
             iconSource: "qrc:/PDFNarrator/assets/images/music_on.svg"
+            buttonRadius: Style.buttonRadiusFactor
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
 
         IconButton {
             id: settings
             iconSource: "qrc:/PDFNarrator/assets/images/settings.svg"
             onClicked: settingsPopup.open()
+            buttonRadius: Style.buttonRadiusFactor
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         }
 
         FileDialog {
