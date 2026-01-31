@@ -1,0 +1,19 @@
+# cache/ config dirs
+.vscode
+.cache
+
+# build dir
+build
+
+# Large runtime assets
+android/res
+assets/model
+
+# helper files
+build.sh
+.clangd
+.gdbinit
+compile_commands.json
+exec
+
+

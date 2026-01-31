@@ -1,0 +1,9 @@
+[submodule "external/sherpa-onnx"]
+	path = external/sherpa-onnx
+	url = https://github.com/k2-fsa/sherpa-onnx.git
+[submodule "external/mupdf"]
+	path = external/mupdf
+	url = https://github.com/ArtifexSoftware/mupdf.git
+[submodule "external/mupdf-android"]
+	path = external/mupdf-android
+	url = git://git.ghostscript.com/mupdf-android-fitz.git
