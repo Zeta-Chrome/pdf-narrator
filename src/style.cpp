@@ -37,6 +37,11 @@ double Style::busyIndicatorFactor() const
     return isMobile() ? 0.12 : 0.08;
 }
 
+double Style::playPauseFactor() const
+{
+    return isMobile() ? 0.2 : 0.08;
+}
+
 double Style::buttonRadiusFactor() const
 {
     return isMobile() ? 0.1 : 0.5;

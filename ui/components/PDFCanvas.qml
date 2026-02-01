@@ -18,7 +18,7 @@ Item {
 
     BusyIndicator {
         anchors.centerIn: parent
-        running: false
+        running: !appController.isPdfLoaded 
         visible: running
         width: parent.width * Style.busyIndicatorFactor
         height: width
@@ -27,9 +27,12 @@ Item {
     IconButton {
         id: playPause
         anchors.centerIn: parent
-        iconSource: "qrc:/PDFNarrator/assets/images/pause.svg"
-        visible: root.controlsVisible 
-        width: parent.width * Style.busyIndicatorFactor
+        iconSource: appController.isPlaying ? 
+                    "qrc:/PDFNarrator/assets/images/pause.svg" : 
+                    "qrc:/PDFNarrator/assets/images/play.svg" 
+        enabled: appController.isPdfLoaded
+        visible: root.controlsVisible && enabled 
+        width: parent.width * Style.playPauseFactor
         height: width
         buttonRadius: 1.0
     }

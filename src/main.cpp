@@ -3,6 +3,8 @@
 #include <QQmlContext>
 #include <QIcon>
 
+#include "app_controller.h"
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -12,6 +14,10 @@ int main(int argc, char *argv[])
     app.setApplicationName("PDF Narrator");
 
     QQmlApplicationEngine engine;
+
+    AppController *controller = new AppController;
+    engine.rootContext()->setContextProperty("appController", controller);
+
     const QUrl url(QStringLiteral("qrc:/PDFNarrator/ui/Main.qml"));
 
     QObject::connect(

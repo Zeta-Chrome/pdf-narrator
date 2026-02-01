@@ -58,7 +58,7 @@ Rectangle {
             }
 
             Text {
-                text: "/ " + "100"
+                text: "/ " + String(appController.totalPages)
                 color: "white"
                 font.pixelSize: 16
                 topPadding: Style.totalPagesTopPadding 
@@ -91,6 +91,7 @@ Rectangle {
                 if (path.startsWith("file://")) {
                     path = path.substring(7);
                 }
+                appController.openPDF(path)
             }
         }
 
@@ -103,6 +104,7 @@ Rectangle {
                 if (path.startsWith("file://")) {
                     path = path.substring(7);
                 }
+                appController.openMusic(path)
             }
         }
     }

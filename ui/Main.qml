@@ -9,12 +9,12 @@ ApplicationWindow {
     visible: true
     title: "PDF Narrator"
     color: "#000000"
-    
-    property bool controlsVisible: true 
+
+    property bool controlsVisible: true
     property int hideControlsDelay: 3000
 
     Component.onCompleted: {
-        root.showMaximized()
+        root.showMaximized();
     }
 
     Timer {
@@ -23,26 +23,26 @@ ApplicationWindow {
         running: false
         repeat: false
         onTriggered: {
-            root.controlsVisible = false
+            root.controlsVisible = false;
         }
     }
 
     function showControls() {
-        controlsVisible = true
-        hideTimer.restart()
-    } 
+        controlsVisible = true;
+        hideTimer.restart();
+    }
 
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
         propagateComposedEvents: true
-        
+
         onPositionChanged: {
-            root.showControls()
+            root.showControls();
         }
-        
+
         onClicked: {
-            root.showControls()
+            root.showControls();
         }
     }
 
@@ -52,8 +52,18 @@ ApplicationWindow {
         controlsVisible: root.controlsVisible
     }
 
+    Connections {
+        target: appController
+        function onStatusMessage(message) {
+            console.log(message); 
+        }
+        function onErrorOccurred(error) {
+            console.log("Error: " + error) 
+        }
+    }
+
     TopControlBar {
-        id: topControlBar 
+        id: topControlBar
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -63,7 +73,7 @@ ApplicationWindow {
     }
 
     BottomControlBar {
-        id: bottomControlBar 
+        id: bottomControlBar
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
