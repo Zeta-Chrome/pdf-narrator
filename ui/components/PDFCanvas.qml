@@ -5,6 +5,9 @@ import PDFNarrator
 Item {
     id: root
     property bool controlsVisible: true
+    property int minImageDisplayMs: 2000
+    property bool imageTimerActive: false
+    property string currentImageId: appController.currentImageId
 
     Image {
         id: pageImage
@@ -13,12 +16,34 @@ Item {
         smooth: true
         cache: false
 
-        source: "qrc:PDFNarrator/assets/images/icon.svg"
+        source: appController.isPdfLoaded ? 
+                "image://pdfimages/" + currentImageId : 
+                "qrc:PDFNarrator/assets/images/icon.svg"
+        
+        onSourceChanged: {
+            if (appController.isPdfLoaded) {
+                imageTimer.restart()
+                imageTimerActive = true
+            }
+        }
+    }
+
+    Timer {
+        id: imageTimer
+        interval: minImageDisplayMs
+        repeat: false
+        onTriggered: {
+            imageTimerActive = false
+        }
+    }
+    
+    function canAdvanceImage() {
+        return !imageTimerActive
     }
 
     BusyIndicator {
         anchors.centerIn: parent
-        running: !appController.isPdfLoaded 
+        running: appController.isBusy
         visible: running
         width: parent.width * Style.busyIndicatorFactor
         height: width
@@ -29,11 +54,14 @@ Item {
         anchors.centerIn: parent
         iconSource: appController.isPlaying ? 
                     "qrc:/PDFNarrator/assets/images/pause.svg" : 
-                    "qrc:/PDFNarrator/assets/images/play.svg" 
-        enabled: appController.isPdfLoaded
-        visible: root.controlsVisible && enabled 
+                    "qrc:/PDFNarrator/assets/images/play.svg"
+        visible: root.controlsVisible && enabled
+        enabled: !appController.isBusy
         width: parent.width * Style.playPauseFactor
         height: width
         buttonRadius: 1.0
+        onClicked: {
+            appController.isPlaying ? appController.pause() : appController.play()
+        } 
     }
 }

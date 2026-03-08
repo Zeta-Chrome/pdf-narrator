@@ -34,11 +34,12 @@ Rectangle {
 
         Row {
             spacing: 10
+            Layout.preferredWidth: 120
 
             TextField {
                 id: pageField
-                text: "2"
-                implicitWidth: parent.width * 0.5
+                text: appController.totalPages == 0 ? 0 : appController.currentPage + 1
+                implicitWidth: 60
                 horizontalAlignment: Text.AlignHCenter
                 color: "white"
 
@@ -49,11 +50,25 @@ Rectangle {
 
                 validator: IntValidator {
                     bottom: 1
-                    top: 100
+                    top: appController.totalPages
                 }
 
                 onAccepted: {
-                    console.log(text);
+                    var pageNum = parseInt(text) - 1
+                    if (pageNum >= 0 && pageNum < appController.totalPages) {
+                        appController.setCurrentPage(pageNum)
+                    } else {
+                        text = appController.currentPage + 1
+                    }
+                }
+                
+                Connections {
+                    target: appController
+                    function onCurrentPageChanged() {
+                        if (!pageField.activeFocus) {
+                            pageField.text = appController.currentPage + 1
+                        }
+                    }
                 }
             }
 
@@ -61,16 +76,19 @@ Rectangle {
                 text: "/ " + String(appController.totalPages)
                 color: "white"
                 font.pixelSize: 16
-                topPadding: Style.totalPagesTopPadding 
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
 
         IconButton {
             id: toggleMusic
-            iconSource: "qrc:/PDFNarrator/assets/images/music_on.svg"
+            iconSource: appController.isMusicEnabled ? 
+                        "qrc:/PDFNarrator/assets/images/music_on.svg" :
+                        "qrc:/PDFNarrator/assets/images/music_off.svg"
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
+            onClicked: appController.toggleMusic()
         }
 
         IconButton {

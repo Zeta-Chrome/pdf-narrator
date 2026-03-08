@@ -32,6 +32,60 @@ ApplicationWindow {
         hideTimer.restart();
     }
 
+    Item {
+        id: keyboardHandler
+        focus: true
+        
+        Keys.onPressed: (event) => {
+            if (!appController.isPdfLoaded) {
+                return;
+            }
+            
+            switch(event.key) {
+                case Qt.Key_Space:
+                    if (appController.isPlaying) {
+                        appController.pause();
+                    } else {
+                        appController.play();
+                    }
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_Left:
+                    appController.prevLine();
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_Right:
+                    appController.nextLine();
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_Up:
+                    appController.prevPage();
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_Down:
+                    appController.nextPage();
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_M:
+                    appController.toggleMusic();
+                    event.accepted = true;
+                    break;
+                    
+                case Qt.Key_Escape:
+                    if (appController.isPlaying) {
+                        appController.pause();
+                    }
+                    event.accepted = true;
+                    break;
+            }
+        }
+    }
+
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
@@ -43,6 +97,7 @@ ApplicationWindow {
 
         onClicked: {
             root.showControls();
+            keyboardHandler.forceActiveFocus();
         }
     }
 
@@ -50,15 +105,77 @@ ApplicationWindow {
         id: pdfCanvas
         anchors.fill: parent
         controlsVisible: root.controlsVisible
-    }
+   }
 
     Connections {
         target: appController
+        
         function onStatusMessage(message) {
-            console.log(message); 
+            console.log("Status:", message);
+            statusText.text = message;
+            statusText.visible = true;
+            statusTimer.restart();
         }
+        
         function onErrorOccurred(error) {
-            console.log("Error: " + error) 
+            console.error("Error:", error);
+            errorText.text = "Error: " + error;
+            errorText.visible = true;
+            errorTimer.restart();
+        }
+    }
+
+    // Status message display
+    Rectangle {
+        id: statusRect
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: parent.height * 0.15
+        width: statusText.width + 40
+        height: statusText.height + 20
+        color: "#CC000000"
+        radius: 10
+        visible: statusText.visible
+        
+        Text {
+            id: statusText
+            anchors.centerIn: parent
+            color: "#00FF00"
+            font.pixelSize: 16
+            visible: false
+        }
+        
+        Timer {
+            id: statusTimer
+            interval: 3000
+            onTriggered: statusText.visible = false
+        }
+    }
+
+    // Error message display
+    Rectangle {
+        id: errorRect
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: parent.height * 0.15
+        width: errorText.width + 40
+        height: errorText.height + 20
+        color: "#CC000000"
+        radius: 10
+        visible: errorText.visible
+        
+        Text {
+            id: errorText
+            anchors.centerIn: parent
+            color: "#FF4444"
+            font.pixelSize: 16
+            visible: false
+        }
+        
+        Timer {
+            id: errorTimer
+            interval: 5000
+            onTriggered: errorText.visible = false
         }
     }
 

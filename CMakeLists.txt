@@ -57,6 +57,7 @@ target_include_directories(${EXECUTABLE_NAME} PUBLIC
     ${CMAKE_SOURCE_DIR}/include/pdf_narrator
 )
 
+set_source_files_properties(ui/Style.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 qt6_add_qml_module(${EXECUTABLE_NAME}
     URI "PDFNarrator"
     VERSION "1.0"
@@ -199,10 +200,7 @@ if(ANDROID)
     )
     
     add_dependencies(${EXECUTABLE_NAME} mupdf sherpa-onnx-c-api)
-endif()
 
-# Installation
-if(ANDROID)
     install(TARGETS ${EXECUTABLE_NAME}
         BUNDLE DESTINATION .
         RUNTIME DESTINATION bin

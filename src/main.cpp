@@ -4,9 +4,15 @@
 #include <QIcon>
 
 #include "app_controller.h"
+#include "image_provider.h"
 
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_LINUX
+    // Force FFmpeg to use PulseAudio backend on Linux
+    qputenv("QT_AUDIO_BACKEND", "pulseaudio");
+#endif
+    
     QGuiApplication app(argc, argv);
 
     app.setOrganizationName("PDFNarrator");
@@ -15,8 +21,12 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
 
-    AppController *controller = new AppController;
+    // Create controller
+    AppController *controller = new AppController(&app);
     engine.rootContext()->setContextProperty("appController", controller);
+
+    // Register image provider for PDF images
+    engine.addImageProvider("pdfimages", new ImageProvider(controller));
 
     const QUrl url(QStringLiteral("qrc:/PDFNarrator/ui/Main.qml"));
 
@@ -36,6 +46,5 @@ int main(int argc, char *argv[])
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    return app.exec();
+    return app.exec(); 
 }
-

@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <iostream>
 
 TTSManager::TTSManager(QObject *parent) : QObject(parent), m_tts(nullptr), m_isInitialized(false) {}
 
@@ -21,8 +22,6 @@ bool TTSManager::initialize(const QString &modelPath)
     {
         QString error = QString("Model directory does not exist: %1").arg(modelPath);
         qWarning() << error;
-        emit synthesisFailed(error);
-        emit initializationComplete(false);
         return false;
     }
 
@@ -35,8 +34,6 @@ bool TTSManager::initialize(const QString &modelPath)
     {
         QString error = QString("Model file not found: %1").arg(modelFile);
         qWarning() << error;
-        emit synthesisFailed(error);
-        emit initializationComplete(false);
         return false;
     }
 
@@ -44,8 +41,6 @@ bool TTSManager::initialize(const QString &modelPath)
     {
         QString error = QString("espeak-ng-data directory not found: %1").arg(dataDir);
         qWarning() << error;
-        emit synthesisFailed(error);
-        emit initializationComplete(false);
         return false;
     }
     
@@ -63,9 +58,6 @@ bool TTSManager::initialize(const QString &modelPath)
     config.model.kokoro.data_dir = dataDirBa.constData();
     config.model.kokoro.tokens = tokensFileBa.constData();
     config.model.kokoro.voices = voicesFileBa.constData();
-    config.max_num_sentences = 1;
-    config.rule_fsts = "";
-    config.rule_fars = "";
 
     try
     {
@@ -75,8 +67,6 @@ bool TTSManager::initialize(const QString &modelPath)
         {
             QString error = "TTS initialization failed: Could not create TTS instance";
             qWarning() << error;
-            emit synthesisFailed(error);
-            emit initializationComplete(false);
             return false;
         }
 
@@ -87,14 +77,11 @@ bool TTSManager::initialize(const QString &modelPath)
             m_tts = nullptr;
             QString error = "TTS initialization failed: Invalid sample rate";
             qWarning() << error;
-            emit synthesisFailed(error);
-            emit initializationComplete(false);
             return false;
         }
 
         m_isInitialized = true;
         qInfo() << "TTS initialized successfully. Sample rate:" << sampleRate;
-        emit initializationComplete(true);
         return true;
     }
     catch (const std::exception &e)
@@ -106,8 +93,6 @@ bool TTSManager::initialize(const QString &modelPath)
         }
         QString error = QString("TTS initialization failed: %1").arg(e.what());
         qWarning() << error;
-        emit synthesisFailed(error);
-        emit initializationComplete(false);
         return false;
     }
 }
@@ -122,17 +107,17 @@ void TTSManager::shutdown()
     m_isInitialized = false;
 }
 
-void TTSManager::synthesizeText(const QString &text, int sentenceId)
+void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenceId, int speed)
 {
     if (!m_isInitialized || !m_tts)
     {
-        emit synthesisFailed("TTS not initialized");
+        emit synthesisFailed(pageNumber, sentenceId, "TTS not initialized");
         return;
     }
 
     if (text.trimmed().isEmpty())
     {
-        emit synthesisFailed("Empty text provided");
+        emit synthesisFailed(pageNumber, sentenceId, "Empty text provided");
         return;
     }
 
@@ -144,11 +129,11 @@ void TTSManager::synthesizeText(const QString &text, int sentenceId)
         // Speed: 1.0 = normal, <1.0 = slower, >1.0 = faster
         // sid: speaker ID (0 for single-speaker models like Kokoro)
         const SherpaOnnxGeneratedAudio *audio =
-            SherpaOnnxOfflineTtsGenerate(m_tts, textUtf8.constData(), 0, 1.0f);
+            SherpaOnnxOfflineTtsGenerate(m_tts, textUtf8.constData(), 0, speed);
 
         if (!audio || audio->n == 0)
         {
-            emit synthesisFailed("TTS generated no audio");
+            emit synthesisFailed(pageNumber, sentenceId, "TTS generated no audio");
             if (audio)
             {
                 SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
@@ -161,26 +146,17 @@ void TTSManager::synthesizeText(const QString &text, int sentenceId)
         audioData.resize(audio->n * sizeof(float));
         memcpy(audioData.data(), audio->samples, audioData.size());
 
-        float sampleRate = static_cast<float>(audio->sample_rate);
+        int sampleRate = static_cast<float>(audio->sample_rate);
 
         // Clean up
         SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
 
-        emit synthesisComplete(sentenceId, audioData, sampleRate);
+        emit synthesisComplete(pageNumber, sentenceId, audioData, sampleRate);
     }
     catch (const std::exception &e)
     {
         QString error = QString("TTS synthesis failed: %1").arg(e.what());
         qWarning() << error;
-        emit synthesisFailed(error);
+        emit synthesisFailed(pageNumber, sentenceId, error);
     }
-}
-
-float TTSManager::getSampleRate() const
-{
-    if (m_tts)
-    {
-        return static_cast<float>(SherpaOnnxOfflineTtsSampleRate(m_tts));
-    }
-    return 0.0f;
 }
