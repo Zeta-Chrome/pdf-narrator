@@ -9,15 +9,19 @@
 #include <qtmetamacros.h>
 
 AppController::AppController(QObject *parent)
-    : QObject(parent), m_isPlaying(true), m_isBusy(false), m_pdfPath(""), m_musicPath(""),
-      m_totalPages(0), m_ttsSpeed(1.0), m_synthPos{0, 0}, m_playbackPos{0, 0}, m_maxLookAheadCount(10),
-      m_maxHistoryCount(5), m_maxQueuedCount(5)
+    : QObject(parent), m_pdfPath(""), m_musicPath(""), m_isBusy(false), m_isPlaying(true),
+      m_totalPages(0), m_currentPage(0), m_ttsSpeed(1.0), m_synthPos{0, 0}, m_playbackPos{0, 0},
+      m_maxLookAheadCount(10), m_maxHistoryCount(5), m_maxQueuedCount(5), m_imageIdx(0), m_imageId(0),
+      m_hasImage(false), m_allImagesDisplayed(false)
 {
     m_pdfParser = std::make_unique<PDFParser>();
     m_ttsManager = std::make_unique<TTSManager>();
     m_audioManager = std::make_unique<AudioManager>();
     m_threadManager = std::make_unique<ThreadManager>();
 
+    m_imageTimer.setInterval(2000);
+    m_imageTimer.setSingleShot(false);
+    connect(&m_imageTimer, &QTimer::timeout, this, &AppController::updateImage);
     connect(m_pdfParser.get(), &PDFParser::pdfLoaded, this, &AppController::onPdfLoaded);
     connect(m_pdfParser.get(), &PDFParser::pdfLoadFailed, this, &AppController::onPdfLoadFailed);
     connect(m_pdfParser.get(), &PDFParser::pageExtracted, this, &AppController::onPageExtracted);
@@ -51,6 +55,12 @@ void AppController::openMusic(const QString &musicPath)
     m_musicPath = musicPath;
     m_audioManager->stopMusic();
     m_audioManager->playMusic(musicPath);
+}
+
+void AppController::toggleMusic()
+{
+    m_audioManager->toggleMusic();
+    emit isMusicEnabledChanged();
 }
 
 void AppController::pause()
@@ -133,6 +143,14 @@ void AppController::navigateTo(Position target)
         m_playbackPos = target;
         m_synthPos = target;
     }
+
+    if (m_currentPage != m_playbackPos.pageNo)
+    {
+        m_currentPage = m_playbackPos.pageNo;
+        emit currentPageChanged();
+        m_imageIdx = 0;
+        restartImageTimer();
+    }
     cancelOutstandingTasks(target);
     synthesizeTargetSentence();
 }
@@ -178,6 +196,43 @@ void AppController::cancelOutstandingTasks(Position target)
             break;
         }
     }
+}
+
+void AppController::updateImage()
+{
+    if (m_pageDataMap[m_currentPage].state != LoadState::Loaded)
+    {
+        return;
+    }
+
+    if (m_imageIdx >= m_pageDataMap[m_currentPage].images.length())
+    {
+        m_imageIdx = 0;
+        m_allImagesDisplayed = true;
+        if (m_coverImage)
+        {
+            m_currentImage = m_coverImage.value();
+            m_hasImage = true;
+        }
+        else
+        {
+            m_hasImage = false;
+        }
+        emit imageIdChanged();
+        m_imageTimer.stop();  // stop any further updates until we go to the next page
+        return;
+    }
+    m_currentImage = m_pageDataMap[m_currentPage].images[m_imageIdx++];
+    m_allImagesDisplayed = false;
+    m_hasImage = true;
+    m_imageId++;
+    emit imageIdChanged();
+}
+
+void AppController::restartImageTimer()
+{
+    updateImage();
+    m_imageTimer.start();
 }
 
 void AppController::prevLine()
@@ -249,13 +304,13 @@ void AppController::nextPage()
     navigateTo(m_playbackPos);
 }
 
-void AppController::toggleMusic()
+void AppController::goToPage(uint16_t page)
 {
-    m_audioManager->toggleMusic();
-    emit isMusicEnabledChanged();
+    m_playbackPos = {page, 0};
+    navigateTo(m_playbackPos);
 }
 
-void AppController::nextPosition(Position &pos, bool isPlayback)
+void AppController::nextPosition(Position &pos)
 {
     if (pos.sentenceIdx == m_pageDataMap[pos.pageNo].sentences.length())
     {
@@ -265,7 +320,8 @@ void AppController::nextPosition(Position &pos, bool isPlayback)
         }
 
         if (m_pageDataMap[pos.pageNo].state == LoadState::Failed ||
-            m_pageDataMap[pos.pageNo].sentences.length() == 0)
+            (m_pageDataMap[pos.pageNo].sentences.length() == 0 &&
+             m_pageDataMap[pos.pageNo].images.length() == 0))
         {
             nextPosition(pos);
         }
@@ -279,7 +335,7 @@ void AppController::nextPosition(Position &pos, bool isPlayback)
     pos.sentenceIdx++;
 }
 
-void AppController::prevPosition(Position &pos, bool isPlayback)
+void AppController::prevPosition(Position &pos)
 {
     if (pos.sentenceIdx == 0)
     {
@@ -289,7 +345,8 @@ void AppController::prevPosition(Position &pos, bool isPlayback)
         }
 
         if (m_pageDataMap[pos.pageNo].state == LoadState::Failed ||
-            m_pageDataMap[pos.pageNo].sentences.length() == 0)
+            (m_pageDataMap[pos.pageNo].sentences.length() == 0 &&
+             m_pageDataMap[pos.pageNo].images.length() == 0))
         {
             prevPosition(pos);
         }
@@ -369,7 +426,8 @@ void AppController::synthesizeTargetSentence()
 
 void AppController::playTargetPlayback()
 {
-    if (!(m_isPlaying && m_plLookAhead.contains(m_playbackPos)))
+    if (!(m_isPlaying && m_plLookAhead.contains(m_playbackPos)) &&
+        ((m_currentPage == m_playbackPos.pageNo) || m_allImagesDisplayed))
     {
         return;
     }
@@ -386,13 +444,43 @@ void AppController::playTargetPlayback()
                                    m_pageDataMap[pos.pageNo].playbacks[pos.sentenceIdx].sampleRate);
 
         nextPosition(m_playbackPos);
-        if (m_playbackPos.pageNo != pos.pageNo)
+        if (m_currentPage != pos.pageNo)
         {
+            m_imageIdx = 0;
+            m_currentPage = pos.pageNo;
             emit currentPageChanged();
+            restartImageTimer();
         }
         evictHistory();
         m_plHistory.enqueue(pos);
     }
+}
+
+void AppController::resetOnPdfLoad()
+{
+    m_isBusy = false;
+    emit isBusyChanged();
+    m_currentPage = 0;
+    emit currentPageChanged();
+
+    // Containers
+    m_pageDataMap.clear();
+    m_synthQueue.clear();
+    m_plLookAhead.clear();
+    m_plHistory.clear();
+    m_cancelledTasks.clear();
+
+    // Positions
+    m_synthPos = {0, 0};
+    m_playbackPos = {0, 0};
+
+    // Images
+    m_imageIdx = 0;
+    m_hasImage = false;
+    m_allImagesDisplayed = false;
+    m_currentImage = QImage();
+    m_coverImage.reset();
+    m_imageTimer.stop();
 }
 
 void AppController::onPdfLoaded(int totalPages)
@@ -400,11 +488,7 @@ void AppController::onPdfLoaded(int totalPages)
     emit statusMessage(QString("PDF Loaded : %1").arg(totalPages));
     m_totalPages = totalPages;
     emit totalPagesChanged();
-    m_synthPos = {0, 0};
-    m_playbackPos = {0, 0};
-    emit currentPageChanged();
-    m_isBusy = false;
-    emit isBusyChanged();
+    resetOnPdfLoad();
     synthesizeTargetSentence();
 }
 
@@ -413,11 +497,7 @@ void AppController::onPdfLoadFailed(const QString &error)
     m_pdfPath = "";
     m_totalPages = 0;
     emit totalPagesChanged();
-    m_synthPos = {0, 0};
-    m_playbackPos = {0, 0};
-    emit currentPageChanged();
-    m_isBusy = false;
-    emit isBusyChanged();
+    resetOnPdfLoad();
     emit errorOccurred(error);
 }
 
@@ -427,6 +507,16 @@ void AppController::onPageExtracted(uint16_t pageNumber, QVector<QString> senten
     m_pageDataMap[pageNumber] = {.state = LoadState::Loaded, .sentences = sentences, .images = images};
     m_pageDataMap[pageNumber].playbacks.resize(sentences.length());
     synthesizeTargetSentence();
+
+    if (pageNumber == 0 && m_pageDataMap[pageNumber].images.length() > 0)
+    {
+        m_coverImage = m_pageDataMap[pageNumber].images[0];
+    }
+
+    if (m_currentPage == pageNumber)
+    {
+        restartImageTimer();
+    }
 }
 
 void AppController::onPageExtractionFailed(uint16_t pageNumber, const QString &error)

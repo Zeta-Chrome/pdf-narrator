@@ -7,7 +7,6 @@ Item {
     property bool controlsVisible: true
     property int minImageDisplayMs: 2000
     property bool imageTimerActive: false
-    property string currentImageId: appController.currentImageId
 
     Image {
         id: pageImage
@@ -16,29 +15,9 @@ Item {
         smooth: true
         cache: false
 
-        source: appController.isPdfLoaded ? 
-                "image://pdfimages/" + currentImageId : 
+        source: appController.imageId != "" ? 
+                "image://pdfimages/" + appController.imageId : 
                 "qrc:PDFNarrator/assets/images/icon.svg"
-        
-        onSourceChanged: {
-            if (appController.isPdfLoaded) {
-                imageTimer.restart()
-                imageTimerActive = true
-            }
-        }
-    }
-
-    Timer {
-        id: imageTimer
-        interval: minImageDisplayMs
-        repeat: false
-        onTriggered: {
-            imageTimerActive = false
-        }
-    }
-    
-    function canAdvanceImage() {
-        return !imageTimerActive
     }
 
     BusyIndicator {

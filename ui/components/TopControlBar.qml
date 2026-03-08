@@ -56,7 +56,7 @@ Rectangle {
                 onAccepted: {
                     var pageNum = parseInt(text) - 1
                     if (pageNum >= 0 && pageNum < appController.totalPages) {
-                        appController.setCurrentPage(pageNum)
+                        appController.goToPage(pageNum)
                     } else {
                         text = appController.currentPage + 1
                     }

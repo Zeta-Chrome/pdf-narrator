@@ -4,6 +4,8 @@
 #include <QString>
 #include <QImage>
 #include <QQueue>
+#include <QTimer>
+#include <optional>
 #include "pdf_parser.h"
 #include "tts_manager.h"
 #include "audio_manager.h"
@@ -86,11 +88,11 @@ class AppController : public QObject
     Q_PROPERTY(bool isPlaying READ isPlaying NOTIFY isPlayingChanged)
     Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
     Q_PROPERTY(int totalPages READ totalPages NOTIFY totalPagesChanged)
-    Q_PROPERTY(int currentPage READ currentPage WRITE setCurrentPage NOTIFY currentPageChanged)
+    Q_PROPERTY(int currentPage READ currentPage WRITE goToPage NOTIFY currentPageChanged)
     Q_PROPERTY(bool isMusicEnabled READ isMusicEnabled NOTIFY isMusicEnabledChanged)
     Q_PROPERTY(float ttsSpeed READ ttsSpeed WRITE setTtsSpeed NOTIFY ttsSpeedChanged)
     Q_PROPERTY(float musicVolume READ musicVolume WRITE setMusicVolume NOTIFY musicVolumeChanged)
-    Q_PROPERTY(QString currentImageId READ currentImageId NOTIFY currentImageIdChanged)
+    Q_PROPERTY(QString imageId READ imageId NOTIFY imageIdChanged)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -111,7 +113,7 @@ public:
     }
     int currentPage() const
     {
-        return m_playbackPos.pageNo;
+        return m_currentPage;
     }
     float ttsSpeed() const
     {
@@ -125,13 +127,12 @@ public:
     {
         return m_audioManager->isMusicEnabled();
     }
-    QString currentImageId() const
+    QString imageId() const
     {
-        return "";
+        return m_hasImage ? QString("%1").arg(m_imageId) : "";
     }
 
     // Property setters
-    void setCurrentPage(int currentPage) {}
     void setTtsSpeed(float speed)
     {
         m_ttsSpeed = speed;
@@ -144,16 +145,20 @@ public:
     // Q_INVOKABLE methods for QML
     Q_INVOKABLE void openPDF(const QString &filePath);
     Q_INVOKABLE void openMusic(const QString &musicPath);
+    Q_INVOKABLE void toggleMusic();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void play();
     Q_INVOKABLE void prevLine();
     Q_INVOKABLE void nextLine();
     Q_INVOKABLE void prevPage();
     Q_INVOKABLE void nextPage();
-    Q_INVOKABLE void toggleMusic();
+    void goToPage(uint16_t page);
 
     // Image provider access (called from QQuickImageProvider)
-    QImage getCurrentImage() const;
+    QImage getCurrentImage() 
+    {
+        return m_currentImage;
+    }
 
 signals:
     void errorOccurred(const QString &error);
@@ -165,7 +170,7 @@ signals:
     void ttsSpeedChanged();
     void musicVolumeChanged();
     void isMusicEnabledChanged();
-    void currentImageIdChanged();
+    void imageIdChanged();
 
 private slots:
     void onPdfLoaded(int totalPages);
@@ -180,19 +185,30 @@ private slots:
     void onMusicFinished();
 
 private:
-    void nextPosition(Position &pos, bool isPlayback = true);
-    void prevPosition(Position &pos, bool isPlayback = true);
+    void nextPosition(Position &pos);
+    void prevPosition(Position &pos);
     void parsePage(int pageNumber);
     void synthesizeTargetSentence();
     void playTargetPlayback();
     void navigateTo(Position target);
     void evictHistory();
     void cancelOutstandingTasks(Position position);
+    void updateImage();
+    void restartImageTimer();
+    void resetOnPdfLoad();
 
     std::unique_ptr<PDFParser> m_pdfParser;
     std::unique_ptr<TTSManager> m_ttsManager;
     std::unique_ptr<AudioManager> m_audioManager;
     std::unique_ptr<ThreadManager> m_threadManager;
+
+    QString m_pdfPath;
+    QString m_musicPath;
+    bool m_isBusy;
+    bool m_isPlaying;
+    uint16_t m_totalPages;
+    uint16_t m_currentPage;
+    int m_ttsSpeed;
 
     QMap<uint16_t, PageData> m_pageDataMap;
     QQueue<Position> m_synthQueue;    // sentences under synthesis
@@ -200,17 +216,17 @@ private:
     QQueue<Position> m_plHistory;     // playback history
     QVector<Position> m_cancelledTasks;  // cancelledTasks
     QMutex m_cancelMutex;
-
-    QString m_pdfPath;
-    QString m_musicPath;
-    bool m_isBusy;
-    uint16_t m_totalPages;
-    int m_ttsSpeed;
-    bool m_isPlaying;
-
     Position m_synthPos;     // Position of next sentence to sythesize
     Position m_playbackPos;  // Position of next sentence to play
     uint8_t m_maxLookAheadCount;
     uint8_t m_maxHistoryCount;
-    uint8_t m_maxQueuedCount;
+    uint8_t m_maxQueuedCount; 
+
+    uint8_t m_imageIdx; // Index of the next Image to be displayed
+    uint32_t m_imageId; // Image identification number
+    bool m_hasImage;
+    QTimer m_imageTimer; 
+    QImage m_currentImage;
+    std::optional<QImage> m_coverImage;
+    bool m_allImagesDisplayed;
 };
