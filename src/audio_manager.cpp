@@ -6,8 +6,7 @@
 #include <qaudio.h>
 
 AudioManager::AudioManager(QObject *parent)
-    : QObject(parent), m_speechVolume(1.0f), m_isMusicEnabled(true), m_musicVolume(0.3f),
-      m_isPaused(false)
+    : QObject(parent)
 {
     m_musicPlayer = std::make_unique<QMediaPlayer>();
     QAudioOutput *audio = new QAudioOutput(this);
@@ -23,7 +22,7 @@ AudioManager::~AudioManager()
     stopSpeech();
 }
 
-void AudioManager::playSpeech(QByteArray audioData, float sampleRate)
+void AudioManager::playSpeech(QByteArray audioData, float sampleRate, uint16_t pageNo, uint16_t sentenceIdx)
 {
     QMutexLocker locker(&m_mutex);
 
@@ -48,7 +47,11 @@ void AudioManager::playSpeech(QByteArray audioData, float sampleRate)
     m_audioSink = std::make_unique<QAudioSink>(deviceInfo, format);
     m_audioSink->setVolume(m_speechVolume);
 
-    connect(m_audioSink.get(), &QAudioSink::stateChanged, this, &AudioManager::onSpeechStateChanged,
+    connect(m_audioSink.get(), &QAudioSink::stateChanged, this,
+            [this, pageNo, sentenceIdx](QAudio::State state)
+            {
+                onSpeechStateChanged(state, pageNo, sentenceIdx);
+            },
             Qt::UniqueConnection);
 
     m_currentAudioData = audioData;
@@ -174,11 +177,11 @@ void AudioManager::setMusicVolume(float volume)
     }
 }
 
-void AudioManager::onSpeechStateChanged(QAudio::State state)
+void AudioManager::onSpeechStateChanged(QAudio::State state, uint16_t pageNo, uint16_t sentenceIdx)
 {
     if (state == QAudio::IdleState)
     {
-        emit speechFinished();
+        emit speechFinished(pageNo, sentenceIdx);
     }
     else if (state == QAudio::ActiveState)
     {

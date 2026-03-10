@@ -2,99 +2,81 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
-#include <iostream>
 
-TTSManager::TTSManager(QObject *parent) : QObject(parent), m_tts(nullptr), m_isInitialized(false) {}
+TTSManager::TTSManager(QObject *parent) : QObject(parent), m_tts(nullptr) {}
 
 TTSManager::~TTSManager()
 {
     shutdown();
 }
 
-bool TTSManager::initialize(const QString &modelPath)
+void TTSManager::initialize(const QString &modelPath)
 {
     shutdown();
-
     m_modelPath = modelPath;
 
     QDir modelDir(modelPath);
     if (!modelDir.exists())
     {
-        QString error = QString("Model directory does not exist: %1").arg(modelPath);
-        qWarning() << error;
-        return false;
+        emit ttsInitializationFailed(QString("Model directory does not exist: %1").arg(modelPath));
+        return;
     }
 
-    QString modelFile = modelDir.filePath("model.onnx");
+    QString modelFile = modelDir.filePath("model.int8.onnx");
+    if (!QFile::exists(modelFile))
+        modelFile = modelDir.filePath("model.onnx");
+
     QString tokensFile = modelDir.filePath("tokens.txt");
     QString voicesFile = modelDir.filePath("voices.bin");
-    QString dataDir = modelDir.filePath("espeak-ng-data");
+    QString dataDir    = modelDir.filePath("espeak-ng-data");
+    QString lexicon    = modelDir.filePath("lexicon-us-en.txt");
 
     if (!QFile::exists(modelFile))
     {
-        QString error = QString("Model file not found: %1").arg(modelFile);
-        qWarning() << error;
-        return false;
+        emit ttsInitializationFailed(QString("Model file not found: %1").arg(modelFile));
+        return;
     }
-
     if (!QDir(dataDir).exists())
     {
-        QString error = QString("espeak-ng-data directory not found: %1").arg(dataDir);
-        qWarning() << error;
-        return false;
+        emit ttsInitializationFailed(QString("espeak-ng-data not found: %1").arg(dataDir));
+        return;
     }
-    
-    QByteArray modelFileBa = modelFile.toUtf8();
-    QByteArray dataDirBa = dataDir.toUtf8();
-    QByteArray tokensFileBa = tokensFile.toUtf8();
-    QByteArray voicesFileBa = voicesFile.toUtf8();
 
-    // Initialize config for Kokoro model
-    SherpaOnnxOfflineTtsConfig config{0};
-    config.model.debug = 0;
-    config.model.num_threads = 2;
-    config.model.provider = "cpu";
-    config.model.kokoro.model = modelFileBa.constData();
-    config.model.kokoro.data_dir = dataDirBa.constData();
-    config.model.kokoro.tokens = tokensFileBa.constData();
-    config.model.kokoro.voices = voicesFileBa.constData();
+    QByteArray modelBa   = modelFile.toUtf8();
+    QByteArray tokensBa  = tokensFile.toUtf8();
+    QByteArray voicesBa  = voicesFile.toUtf8();
+    QByteArray dataBa    = dataDir.toUtf8();
+    QByteArray lexiconBa = QFile::exists(lexicon) ? lexicon.toUtf8() : QByteArray("");
 
-    try
+    SherpaOnnxOfflineTtsConfig config{};
+    config.model.debug           = 0;
+    config.model.num_threads     = 2;
+    config.model.provider        = "cpu";
+    config.model.kokoro.model    = modelBa.constData();
+    config.model.kokoro.tokens   = tokensBa.constData();
+    config.model.kokoro.voices   = voicesBa.constData();
+    config.model.kokoro.data_dir = dataBa.constData();
+    config.model.kokoro.lexicon  = lexiconBa.constData();
+
+    m_tts = SherpaOnnxCreateOfflineTts(&config);
+    if (!m_tts)
     {
-        m_tts = SherpaOnnxCreateOfflineTts(&config);
-
-        if (!m_tts)
-        {
-            QString error = "TTS initialization failed: Could not create TTS instance";
-            qWarning() << error;
-            return false;
-        }
-
-        int sampleRate = SherpaOnnxOfflineTtsSampleRate(m_tts);
-        if (sampleRate == 0)
-        {
-            SherpaOnnxDestroyOfflineTts(m_tts);
-            m_tts = nullptr;
-            QString error = "TTS initialization failed: Invalid sample rate";
-            qWarning() << error;
-            return false;
-        }
-
-        m_isInitialized = true;
-        qInfo() << "TTS initialized successfully. Sample rate:" << sampleRate;
-        return true;
+        emit ttsInitializationFailed("Could not create TTS instance");
+        return;
     }
-    catch (const std::exception &e)
+
+    int sampleRate = SherpaOnnxOfflineTtsSampleRate(m_tts);
+    if (sampleRate == 0)
     {
-        if (m_tts)
-        {
-            SherpaOnnxDestroyOfflineTts(m_tts);
-            m_tts = nullptr;
-        }
-        QString error = QString("TTS initialization failed: %1").arg(e.what());
-        qWarning() << error;
-        return false;
+        SherpaOnnxDestroyOfflineTts(m_tts);
+        m_tts = nullptr;
+        emit ttsInitializationFailed("Invalid sample rate returned by TTS");
+        return;
     }
+
+    m_isInitialized = true;
+    qInfo() << "TTS initialized. Sample rate:" << sampleRate;
+    emit ttsInitializationComplete();
 }
 
 void TTSManager::shutdown()
@@ -107,7 +89,7 @@ void TTSManager::shutdown()
     m_isInitialized = false;
 }
 
-void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenceId, int speed)
+void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenceId, int speakerId, float speed)
 {
     if (!m_isInitialized || !m_tts)
     {
@@ -129,7 +111,7 @@ void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenc
         // Speed: 1.0 = normal, <1.0 = slower, >1.0 = faster
         // sid: speaker ID (0 for single-speaker models like Kokoro)
         const SherpaOnnxGeneratedAudio *audio =
-            SherpaOnnxOfflineTtsGenerate(m_tts, textUtf8.constData(), 0, speed);
+            SherpaOnnxOfflineTtsGenerate(m_tts, textUtf8.constData(), speakerId, speed);
 
         if (!audio || audio->n == 0)
         {
@@ -146,7 +128,7 @@ void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenc
         audioData.resize(audio->n * sizeof(float));
         memcpy(audioData.data(), audio->samples, audioData.size());
 
-        int sampleRate = static_cast<float>(audio->sample_rate);
+        int sampleRate = audio->sample_rate;
 
         // Clean up
         SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);

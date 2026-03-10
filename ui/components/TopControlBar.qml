@@ -39,13 +39,12 @@ Rectangle {
             TextField {
                 id: pageField
                 text: appController.totalPages == 0 ? 0 : appController.currentPage + 1
-                implicitWidth: 60
+                font.pixelSize: 16
                 horizontalAlignment: Text.AlignHCenter
                 color: "white"
 
                 background: Rectangle {
-                    color: "#20FFFFFF"
-                    radius: 3
+                    color: "transparent"
                 }
 
                 validator: IntValidator {
@@ -73,7 +72,7 @@ Rectangle {
             }
 
             Text {
-                text: "/ " + String(appController.totalPages)
+                text: "/   " + String(appController.totalPages)
                 color: "white"
                 font.pixelSize: 16
                 anchors.verticalCenter: parent.verticalCenter

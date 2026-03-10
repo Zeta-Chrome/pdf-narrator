@@ -31,7 +31,9 @@ Item {
     IconButton {
         id: playPause
         anchors.centerIn: parent
-        iconSource: appController.isPlaying ? 
+        iconSource: appController.isRestart ? 
+                    "qrc:/PDFNarrator/assets/images/restart.svg" : 
+                    appController.isPlaying ? 
                     "qrc:/PDFNarrator/assets/images/pause.svg" : 
                     "qrc:/PDFNarrator/assets/images/play.svg"
         visible: root.controlsVisible && enabled
@@ -40,6 +42,7 @@ Item {
         height: width
         buttonRadius: 1.0
         onClicked: {
+            appController.isRestart ? appController.restart() : 
             appController.isPlaying ? appController.pause() : appController.play()
         } 
     }

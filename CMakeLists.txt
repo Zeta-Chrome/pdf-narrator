@@ -58,14 +58,13 @@ target_include_directories(${EXECUTABLE_NAME} PUBLIC
 )
 
 set_source_files_properties(ui/Style.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt6_add_qml_module(${EXECUTABLE_NAME}
     URI "PDFNarrator"
-    VERSION "1.0"
+    VERSION 1.0
     QML_FILES ${QML_FILES}
     SOURCES ${SOURCES} ${HEADERS}
     RESOURCES ${IMAGE_ASSETS}
-    NO_PLUGIN
-    NO_GENERATE_PLUGIN_SOURCE
 )
 
 # Link Qt libraries

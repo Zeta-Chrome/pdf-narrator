@@ -6,16 +6,12 @@ import "components"
 
 ApplicationWindow {
     id: root
-    visible: true
+    visibility: Window.Maximized
     title: "PDF Narrator"
     color: "#000000"
 
     property bool controlsVisible: true
     property int hideControlsDelay: 3000
-
-    Component.onCompleted: {
-        root.showMaximized();
-    }
 
     Timer {
         id: hideTimer
@@ -123,6 +119,12 @@ ApplicationWindow {
             errorText.visible = true;
             errorTimer.restart();
         }
+
+        function onIsInitializedChanged() {
+            if (appController.isInitialized) {
+                root.showControls();
+            }
+        }
     }
 
     // Status message display
@@ -197,4 +199,6 @@ ApplicationWindow {
         height: parent.height * Style.bottomBarHFactor
         visible: root.controlsVisible
     }
+
+    Splash {}
 }

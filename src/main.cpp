@@ -28,23 +28,11 @@ int main(int argc, char *argv[])
     // Register image provider for PDF images
     engine.addImageProvider("pdfimages", new ImageProvider(controller));
 
-    const QUrl url(QStringLiteral("qrc:/PDFNarrator/ui/Main.qml"));
-
     QObject::connect(
-        &engine,
-        &QQmlApplicationEngine::objectCreated,
-        &app,
-        [url](QObject *obj, const QUrl &objUrl)
-        {
-            if (!obj && url == objUrl)
-                QCoreApplication::exit(-1);
-        },
-        Qt::QueuedConnection);
+        &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
+        []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
-    engine.load(url);
-
-    if (engine.rootObjects().isEmpty())
-        return -1;
+    engine.loadFromModule("PDFNarrator", "Main");
 
     return app.exec(); 
 }

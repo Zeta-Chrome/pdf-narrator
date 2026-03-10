@@ -8,9 +8,29 @@
 typedef struct
 {
     fz_device super;
+    uint16_t count;
+} image_count_device;
+
+typedef struct
+{
+    fz_device super;
     fz_context *ctx;
     QVector<QImage> *images;
 } image_extract_device;
+
+static void image_count_fill_image(fz_context *ctx, fz_device *dev_,
+    fz_image *image, fz_matrix ctm, float alpha, fz_color_params cp)
+{
+    ((image_count_device *)dev_)->count++;
+}
+
+static fz_device *fz_new_image_count_device(fz_context *ctx)
+{
+    image_count_device *dev = fz_new_derived_device(ctx, image_count_device);
+    dev->super.fill_image = image_count_fill_image;
+    dev->count = 0;
+    return (fz_device *)dev;
+}
 
 static void image_extract_fill_image(fz_context *ctx, fz_device *dev_, fz_image *image, fz_matrix ctm,
                                      float alpha, fz_color_params color_params)
@@ -138,7 +158,7 @@ PDFParser::PDFParser(QObject *parent)
 
 PDFParser::~PDFParser()
 {
-    closePDF();
+    closePdf();
     if (m_context)
     {
         fz_drop_context(m_context);
@@ -146,9 +166,9 @@ PDFParser::~PDFParser()
     }
 }
 
-void PDFParser::loadPDF(const QString &filePath)
+void PDFParser::loadPdf(const QString &filePath)
 {
-    closePDF();
+    closePdf();
 
     fz_try(m_context)
     {
@@ -158,6 +178,7 @@ void PDFParser::loadPDF(const QString &filePath)
     {
         QString error = QString("Failed to register handlers: %1").arg(fz_caught_message(m_context));
         emit pdfLoadFailed(error);
+        return;
     }
 
     fz_try(m_context)
@@ -168,6 +189,7 @@ void PDFParser::loadPDF(const QString &filePath)
     {
         QString error = QString("Failed to open PDF: %1").arg(fz_caught_message(m_context));
         emit pdfLoadFailed(error);
+        return;
     }
 
     fz_try(m_context)
@@ -178,6 +200,7 @@ void PDFParser::loadPDF(const QString &filePath)
     {
         QString error = QString("Failed to count document pages: %1").arg(fz_caught_message(m_context));
         emit pdfLoadFailed(error);
+        return;
     }
 
     m_filePath = filePath;
@@ -185,7 +208,7 @@ void PDFParser::loadPDF(const QString &filePath)
     emit pdfLoaded(m_pageCount);
 }
 
-void PDFParser::closePDF()
+void PDFParser::closePdf()
 {
     if (m_document)
     {
@@ -236,98 +259,150 @@ void PDFParser::saveImagesToTestDirectory(const QVector<QImage> &images, int pag
 }
 #endif
 
-QVector<QString> PDFParser::extractLines(fz_stext_page *textPage)
+QVector<QString> PDFParser::extractSentences(fz_stext_page *textPage)
 {
+    static const QRegularExpression sentenceEnd(R"((?<=[.!?])\s+)");
+    static const QRegularExpression abbreviation(R"(\b([A-Z][a-z]{0,3}|\d+)\.$)");
+
+    auto wordCount = [](const QString &s) {
+        return s.split(' ', Qt::SkipEmptyParts).size();
+    };
+
+    auto flushBuffer = [&](QVector<QString> &result, QString &buffer) {
+        QString s = buffer.simplified();
+        if (!s.isEmpty())
+            result.append(s);
+        buffer.clear();
+    };
+
     QVector<QString> result;
+    QString buffer;
 
     for (fz_stext_block *block = textPage->first_block; block; block = block->next)
     {
         if (block->type != FZ_STEXT_BLOCK_TEXT)
             continue;
 
+        // Build lines preserving boundaries with a sentinel
+        QString blockText;
         for (fz_stext_line *line = block->u.t.first_line; line; line = line->next)
         {
             QString lineText;
-            for (fz_stext_char *ch = line->first_char; ch; ch = ch->next) lineText += QChar(ch->c);
-
+            for (fz_stext_char *ch = line->first_char; ch; ch = ch->next)
+                lineText += QChar(ch->c);
             lineText = lineText.trimmed();
-            if (!lineText.isEmpty())
-                result.append(lineText);
+            if (lineText.isEmpty()) continue;
+
+            if (lineText.endsWith('-'))
+                blockText += lineText.chopped(1);      // hyphen — no separator
+            else
+                blockText += lineText + "\n";          // preserve line boundary
         }
+
+        QStringList lines = blockText.split('\n', Qt::SkipEmptyParts);
+        QStringList parts;
+
+        for (const QString &line : lines)
+        {
+            QStringList sentenceParts = line.simplified().split(sentenceEnd);
+            for (int i = 0; i < sentenceParts.size(); i++)
+            {
+                if (i == sentenceParts.size() - 1)
+                    parts.append(sentenceParts[i].trimmed() + "\n");
+                else
+                    parts.append(sentenceParts[i].trimmed());
+            }
+        }
+
+        for (const QString &part : parts)
+        {
+            bool isLineEnd = part.endsWith('\n');
+            QString text = part.trimmed();
+            if (text.isEmpty()) continue;
+
+            buffer += (buffer.isEmpty() ? "" : " ") + text;
+
+            bool isAbbreviation = abbreviation.match(buffer.trimmed()).hasMatch();
+            bool longEnough     = wordCount(buffer) > 7;
+            bool tooLong        = wordCount(buffer) >= 50;
+
+            if (tooLong)
+            {
+                flushBuffer(result, buffer);
+            }
+            else if (longEnough && !isAbbreviation && !isLineEnd)
+            {
+                flushBuffer(result, buffer);
+            }
+        }
+    }
+
+    if (!buffer.simplified().isEmpty())
+    {
+        if (wordCount(buffer) <= 7 && !result.isEmpty())
+            result.last() += " " + buffer.simplified();
+        else
+            result.append(buffer.simplified());
     }
 
     return result;
 }
 
-QVector<QString> PDFParser::segmentLinesToSentences(QVector<QString> &lines)
+void PDFParser::extractPdfStructure()
 {
-    QRegularExpression numberedItem("(^|\\b)(\\d+\\.)+\\d*$");
-    QRegularExpression abbreviation("\\b[A-Z][a-z]{0,3}\\.$");
+    QVector<PageIndex> structure;
+    structure.reserve(m_pageCount);
 
-    auto wordCount = [](const QString &s) { return s.split(' ', Qt::SkipEmptyParts).size(); };
-
-    auto isSentenceEnd = [&](const QString &s)
+    for (int pageNo = 0; pageNo < m_pageCount; pageNo++)
     {
-        QString t = s.trimmed();
-        if (!t.endsWith('.') && !t.endsWith('!') && !t.endsWith('?'))
-            return false;
-        if (numberedItem.match(t).hasMatch())
-            return false;
-        if (abbreviation.match(t).hasMatch())
-            return false;
-        return true;
-    };
+        fz_page *page = nullptr;
+        fz_stext_page *textPage = nullptr;
+        fz_display_list *list = nullptr;
+        fz_device *dev = nullptr;
+        PageIndex index;
 
-    QVector<QString> result;
-    QString buffer;
-
-    for (int i = 0; i < lines.size(); i++)
-    {
-        QString line = lines[i].trimmed();
-        if (line.isEmpty())
-            continue;
-
-        // Handle hyphen: merge with next line without space
-        if (line.endsWith('-') && i + 1 < lines.size())
+        fz_try(m_context)
         {
-            line.chop(1);
-            buffer += (buffer.isEmpty() ? "" : " ") + line;
-            buffer += '\x01';  // sentinel: next line continues this word, no space
-            continue;
+            page = fz_load_page(m_context, m_document, pageNo);
+
+            // Sentence count
+            fz_stext_options opts = {0};
+            textPage = fz_new_stext_page_from_page(m_context, page, &opts);
+            index.sentenceCount = static_cast<uint16_t>(extractSentences(textPage).size());
+
+            // Image count — build display list then run counter device
+            fz_rect bounds = fz_bound_page(m_context, page);
+            list = fz_new_display_list(m_context, bounds);
+            dev = fz_new_list_device(m_context, list);
+            fz_run_page(m_context, page, dev, fz_identity, nullptr);
+            fz_close_device(m_context, dev);
+            fz_drop_device(m_context, dev);
+            dev = nullptr;
+
+            image_count_device *countDev = 
+                (image_count_device *)fz_new_image_count_device(m_context);
+            fz_run_display_list(m_context, list, (fz_device *)countDev,
+                                fz_identity, bounds, nullptr);
+            fz_close_device(m_context, (fz_device *)countDev);
+            index.imageCount = countDev->count;
+            fz_drop_device(m_context, (fz_device *)countDev);
+        }
+        fz_always(m_context)
+        {
+            fz_drop_display_list(m_context, list);
+            fz_drop_device(m_context, dev);
+            fz_drop_stext_page(m_context, textPage);
+            fz_drop_page(m_context, page);
+        }
+        fz_catch(m_context)
+        {
+            // Failed page — zero counts, pipeline will skip it
         }
 
-        // If previous line ended mid-hyphen we continue without space prefix
-        bool prevHyphen = !buffer.isEmpty() && buffer.endsWith('\x01');
-        if (prevHyphen)
-            buffer.chop(1);
-
-        buffer += (buffer.isEmpty() || prevHyphen ? "" : " ") + line;
-
-        bool atSentenceEnd = isSentenceEnd(buffer);
-        bool tooLong = wordCount(buffer) >= 50;
-
-        if (atSentenceEnd || tooLong)
-        {
-            // Don't flush if too short — keep merging
-            if (wordCount(buffer) >= 10)
-            {
-                result.append(buffer.trimmed().simplified());
-                buffer.clear();
-            }
-        }
+        structure.append(index);
     }
 
-    // Flush remainder
-    if (!buffer.trimmed().isEmpty())
-    {
-        // Merge into last sentence if too short
-        if (wordCount(buffer) < 10 && !result.isEmpty())
-            result.last() += " " + buffer.trimmed().simplified();
-        else
-            result.append(buffer.trimmed().simplified());
-    }
-
-    return result;
+    emit pdfStructureExtracted(structure);
 }
 
 void PDFParser::extractPageContents(int pageNumber)
@@ -349,17 +424,16 @@ void PDFParser::extractPageContents(int pageNumber)
         textPage = fz_new_stext_page_from_page(m_context, page, &opts);
 
         // Use structured extraction instead of raw buffer
-        QVector<QString> lines = extractLines(textPage);
-        QVector<QString> sentences = segmentLinesToSentences(lines);
+        QVector<QString> sentences = extractSentences(textPage);
 
         // Prepend incomplete sentence from previous page if exists
         if (!m_incompleteSentence.isEmpty())
         {
             if (sentences.length() > 0)
-            { 
+            {
                 sentences[0] = m_incompleteSentence + " " + sentences[0];
             }
-            else 
+            else
             {
                 sentences.append(m_incompleteSentence);
             }
@@ -413,5 +487,6 @@ void PDFParser::extractPageContents(int pageNumber)
                             .arg(pageNumber)
                             .arg(fz_caught_message(m_context));
         emit pageExtractionFailed(pageNumber, error);
+        return;
     }
 }

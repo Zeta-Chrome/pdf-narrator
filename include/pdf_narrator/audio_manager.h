@@ -16,7 +16,7 @@ public:
     explicit AudioManager(QObject *parent = nullptr);
     ~AudioManager();
 
-    void playSpeech(QByteArray audioData, float sampleRate);
+    void playSpeech(QByteArray audioData, float sampleRate, uint16_t pageNo, uint16_t sentenceIdx);
     void playMusic(const QString &musicFilePath);
     void toggleMusic();
     void stopMusic();
@@ -32,7 +32,7 @@ public:
         return m_musicVolume;
     }
 
-    int isMusicEnabled() const 
+    bool isMusicEnabled() const 
     {
         return m_isMusicEnabled;
     }
@@ -53,12 +53,11 @@ public:
     }
 
 signals:
-    void speechFinished();
-    void speechFailed(const QString &error);
+    void speechFinished(uint16_t pageNo, uint16_t sentenceIdx);
     void musicFinished();
 
 private slots:
-    void onSpeechStateChanged(QAudio::State state);
+    void onSpeechStateChanged(QAudio::State state, uint16_t pageNo, uint16_t sentenceIdx);
     void onMusicStateChanged(QMediaPlayer::MediaStatus state);
 
 private:
@@ -66,10 +65,10 @@ private:
     std::unique_ptr<QBuffer> m_audioBuffer;
     std::unique_ptr<QMediaPlayer> m_musicPlayer;
 
-    float m_speechVolume;
-    float m_musicVolume;
-    bool m_isPaused;
-    bool m_isMusicEnabled;
+    float m_speechVolume = 1.0f;
+    float m_musicVolume = 0.3f;
+    bool m_isPaused = false;
+    bool m_isMusicEnabled = true;
 
     QMutex m_mutex;
     QByteArray m_currentAudioData;

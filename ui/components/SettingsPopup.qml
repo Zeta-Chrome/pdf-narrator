@@ -88,8 +88,8 @@ Popup {
             ComboBox {
                 id: ttsVoiceList
                 width: parent.width
-                model: ["Voice 1", "Voice 2", "Voice 3"]
-                currentIndex: 0
+                model: appController.ttsVoices
+                currentIndex: appController.ttsSpeaker
 
                 padding: 10
                 implicitWidth: contentItem.implicitWidth + padding * 2
@@ -148,6 +148,10 @@ Popup {
                         border.color: "#FF1F1F1F"
                         radius: 2
                     }
+                }
+
+                onCurrentIndexChanged: {
+                    appController.ttsSpeaker = currentIndex;
                 }
             }
         }
