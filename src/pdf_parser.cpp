@@ -18,8 +18,8 @@ typedef struct
     QVector<QImage> *images;
 } image_extract_device;
 
-static void image_count_fill_image(fz_context *ctx, fz_device *dev_,
-    fz_image *image, fz_matrix ctm, float alpha, fz_color_params cp)
+static void image_count_fill_image(fz_context *ctx, fz_device *dev_, fz_image *image, fz_matrix ctm,
+                                   float alpha, fz_color_params cp)
 {
     ((image_count_device *)dev_)->count++;
 }
@@ -264,11 +264,10 @@ QVector<QString> PDFParser::extractSentences(fz_stext_page *textPage)
     static const QRegularExpression sentenceEnd(R"((?<=[.!?])\s+)");
     static const QRegularExpression abbreviation(R"(\b([A-Z][a-z]{0,3}|\d+)\.$)");
 
-    auto wordCount = [](const QString &s) {
-        return s.split(' ', Qt::SkipEmptyParts).size();
-    };
+    auto wordCount = [](const QString &s) { return s.split(' ', Qt::SkipEmptyParts).size(); };
 
-    auto flushBuffer = [&](QVector<QString> &result, QString &buffer) {
+    auto flushBuffer = [&](QVector<QString> &result, QString &buffer)
+    {
         QString s = buffer.simplified();
         if (!s.isEmpty())
             result.append(s);
@@ -288,15 +287,15 @@ QVector<QString> PDFParser::extractSentences(fz_stext_page *textPage)
         for (fz_stext_line *line = block->u.t.first_line; line; line = line->next)
         {
             QString lineText;
-            for (fz_stext_char *ch = line->first_char; ch; ch = ch->next)
-                lineText += QChar(ch->c);
+            for (fz_stext_char *ch = line->first_char; ch; ch = ch->next) lineText += QChar(ch->c);
             lineText = lineText.trimmed();
-            if (lineText.isEmpty()) continue;
+            if (lineText.isEmpty())
+                continue;
 
             if (lineText.endsWith('-'))
-                blockText += lineText.chopped(1);      // hyphen — no separator
+                blockText += lineText.chopped(1);  // hyphen — no separator
             else
-                blockText += lineText + "\n";          // preserve line boundary
+                blockText += lineText + "\n";  // preserve line boundary
         }
 
         QStringList lines = blockText.split('\n', Qt::SkipEmptyParts);
@@ -318,13 +317,14 @@ QVector<QString> PDFParser::extractSentences(fz_stext_page *textPage)
         {
             bool isLineEnd = part.endsWith('\n');
             QString text = part.trimmed();
-            if (text.isEmpty()) continue;
+            if (text.isEmpty())
+                continue;
 
             buffer += (buffer.isEmpty() ? "" : " ") + text;
 
             bool isAbbreviation = abbreviation.match(buffer.trimmed()).hasMatch();
-            bool longEnough     = wordCount(buffer) > 7;
-            bool tooLong        = wordCount(buffer) >= 50;
+            bool longEnough = wordCount(buffer) > 7;
+            bool tooLong = wordCount(buffer) >= 50;
 
             if (tooLong)
             {
@@ -368,7 +368,37 @@ void PDFParser::extractPdfStructure()
             // Sentence count
             fz_stext_options opts = {0};
             textPage = fz_new_stext_page_from_page(m_context, page, &opts);
-            index.sentenceCount = static_cast<uint16_t>(extractSentences(textPage).size());
+
+            // Use structured extraction instead of raw buffer
+            QVector<QString> sentences = extractSentences(textPage);
+
+            // Prepend incomplete sentence from previous page if exists
+            if (!m_incompleteSentence.isEmpty())
+            {
+                if (sentences.length() > 0)
+                {
+                    sentences[0] = m_incompleteSentence + " " + sentences[0];
+                }
+                else
+                {
+                    sentences.append(m_incompleteSentence);
+                }
+                m_incompleteSentence.clear();
+            }
+
+            // Check if the last sentence is complete
+            if (!sentences.isEmpty())
+            {
+                QString lastSentence = sentences.last();
+                if (!isCompleteSentence(lastSentence))
+                {
+                    // Save incomplete sentence for next page
+                    m_incompleteSentence = lastSentence;
+                    sentences.removeLast();
+                }
+            }
+
+            index.sentenceCount = static_cast<uint16_t>(sentences.size());
 
             // Image count — build display list then run counter device
             fz_rect bounds = fz_bound_page(m_context, page);
@@ -379,10 +409,8 @@ void PDFParser::extractPdfStructure()
             fz_drop_device(m_context, dev);
             dev = nullptr;
 
-            image_count_device *countDev = 
-                (image_count_device *)fz_new_image_count_device(m_context);
-            fz_run_display_list(m_context, list, (fz_device *)countDev,
-                                fz_identity, bounds, nullptr);
+            image_count_device *countDev = (image_count_device *)fz_new_image_count_device(m_context);
+            fz_run_display_list(m_context, list, (fz_device *)countDev, fz_identity, bounds, nullptr);
             fz_close_device(m_context, (fz_device *)countDev);
             index.imageCount = countDev->count;
             fz_drop_device(m_context, (fz_device *)countDev);
@@ -398,10 +426,8 @@ void PDFParser::extractPdfStructure()
         {
             // Failed page — zero counts, pipeline will skip it
         }
-
         structure.append(index);
     }
-
     emit pdfStructureExtracted(structure);
 }
 
@@ -470,7 +496,7 @@ void PDFParser::extractPageContents(int pageNumber)
 
 #ifdef TESTING
         // Save images to test directory only when TESTING is defined
-        saveImagesToTestDirectory(contents.images, pageNumber);
+        saveImagesToTestDirectory(images, pageNumber);
 #endif
     }
     fz_always(m_context)
@@ -484,8 +510,8 @@ void PDFParser::extractPageContents(int pageNumber)
     fz_catch(m_context)
     {
         QString error = QString("Failed to parse page no: %1 with error: %2")
-                            .arg(pageNumber)
-                            .arg(fz_caught_message(m_context));
+                        .arg(pageNumber)
+                        .arg(fz_caught_message(m_context));
         emit pageExtractionFailed(pageNumber, error);
         return;
     }

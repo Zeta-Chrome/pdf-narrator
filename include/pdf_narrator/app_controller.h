@@ -9,9 +9,7 @@
 #include <QQueue>
 #include <QTimer>
 #include <QJsonObject>
-#include <iostream>
 #include <optional>
-#include <qtmetamacros.h>
 
 enum class LoadState
 {

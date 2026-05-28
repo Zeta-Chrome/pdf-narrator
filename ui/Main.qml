@@ -138,6 +138,7 @@ ApplicationWindow {
         color: "#CC000000"
         radius: 10
         visible: statusText.visible
+        z:1
         
         Text {
             id: statusText
@@ -165,6 +166,7 @@ ApplicationWindow {
         color: "#CC000000"
         radius: 10
         visible: errorText.visible
+        z:1
         
         Text {
             id: errorText
@@ -189,6 +191,7 @@ ApplicationWindow {
         height: parent.height * Style.topBarHFactor
         visible: root.controlsVisible
         windowHeight: root.height
+        z:2
     }
 
     BottomControlBar {
@@ -198,6 +201,7 @@ ApplicationWindow {
         anchors.right: parent.right
         height: parent.height * Style.bottomBarHFactor
         visible: root.controlsVisible
+        z:2
     }
 
     Splash {}

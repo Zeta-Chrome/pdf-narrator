@@ -51,8 +51,7 @@ void AudioManager::playSpeech(QByteArray audioData, float sampleRate, uint16_t p
             [this, pageNo, sentenceIdx](QAudio::State state)
             {
                 onSpeechStateChanged(state, pageNo, sentenceIdx);
-            },
-            Qt::UniqueConnection);
+            });
 
     m_currentAudioData = audioData;
     m_audioBuffer = std::make_unique<QBuffer>(&m_currentAudioData);

@@ -17,7 +17,7 @@ QImage ImageProvider::requestImage(const QString &id, QSize *size, const QSize &
     }
 
     // Get current image from controller
-    QImage image; //= m_controller->getCurrentImage();
+    QImage image = m_controller->currentImage();
     
     if (image.isNull())
     {

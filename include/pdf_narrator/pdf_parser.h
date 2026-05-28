@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QVector>
 
+#define TESTING
 extern "C"
 {
 #include <mupdf/fitz.h>

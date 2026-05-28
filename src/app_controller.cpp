@@ -86,7 +86,7 @@ void AppController::initialize()
 {
     loadState();
     m_threadManager->submitTask(ThreadType::TTSManager,
-                                [this]() { m_ttsManager->initialize("assets/model/kokoro-en-v0_19"); });
+                                [this]() { m_ttsManager->initialize("assets/model/kokoro-int8-multi-lang-v1_1"); });
 }
 
 void AppController::onTtsInitializationComplete()
@@ -290,6 +290,8 @@ void AppController::goToPage(uint16_t page)
 
 void AppController::navigateTo(Position target)
 {
+    cancelOutstandingTasks(target);
+
     m_audioManager->stopSpeech();
     // Case 1: target is ahead in lookahead
     if (m_plLookAhead.contains(target))
@@ -335,7 +337,6 @@ void AppController::navigateTo(Position target)
         updateCurrentPage(m_playbackPos.pageNo, true);
         restartImageTimer();
     }
-    cancelOutstandingTasks(target);
     driveSynthesis();
 }
 
@@ -390,7 +391,6 @@ void AppController::cancelOutstandingTasks(Position target, bool all)
 void AppController::resetState()
 {
     m_pageDataMap.clear();
-    m_pdfStructure.clear();
     m_plLookAhead.clear();
     m_plHistory.clear();
     m_synthQueue.clear();
@@ -403,7 +403,11 @@ void AppController::resetState()
     {
         updateCurrentPage(m_appState.currentPage, true);
         m_synthPos = {m_appState.currentPage, m_appState.sentenceIdx};
-        m_playbackPos = {m_appState.currentPage, m_appState.sentenceIdx};
+        if (m_pdfStructure[m_appState.currentPage].sentenceCount == 0)
+        {
+            nextPosition(m_synthPos);
+        }
+        m_playbackPos = m_synthPos;
         m_appState.imageIdx = m_appState.imageIdx;
         parsePage(0);  // parse the first Page to save the coverImage if available
     }
@@ -411,7 +415,12 @@ void AppController::resetState()
     {
         updateCurrentPage(0, true);
         m_synthPos = {0, 0};
-        m_playbackPos = {0, 0};
+        // get the first valid sentence position
+        if (m_pdfStructure[0].sentenceCount == 0)
+        {
+            nextPosition(m_synthPos);
+        }
+        m_playbackPos = m_synthPos;
         m_appState.imageIdx = 0;
         saveState();
     }
@@ -419,14 +428,21 @@ void AppController::resetState()
 
 void AppController::parsePage(uint16_t pageNumber)
 {
-    m_threadManager->submitTask(ThreadType::PDFParser,
-                                [this, pageNumber]() { m_pdfParser->extractPageContents(pageNumber); });
-    m_pageDataMap[m_synthPos.pageNo].state = LoadState::Loading;
+    // Load all the pages from currentPage to givenPageNumber
+    for (int pg = m_appState.currentPage; pg <= pageNumber; pg++)
+    {
+        if (m_pageDataMap[pg].state == LoadState::Loaded)
+            continue;
+
+        m_threadManager->submitTask(ThreadType::PDFParser,
+                                    [this, pg]() { m_pdfParser->extractPageContents(pg); });
+        m_pageDataMap[pg].state = LoadState::Loading;
+    }
 }
 
 void AppController::prevPosition(Position &pos)
 {
-    if (pos.sentenceIdx == 0)
+    if (pos.sentenceIdx == 0 || m_pdfStructure[pos.pageNo].sentenceCount == 0)
     {
         Position originalPos = pos;
         do
@@ -453,7 +469,8 @@ void AppController::prevPosition(Position &pos)
 
 void AppController::nextPosition(Position &pos)
 {
-    if (pos.sentenceIdx == m_pdfStructure[pos.pageNo].sentenceCount - 1)
+    if (pos.sentenceIdx == m_pdfStructure[pos.pageNo].sentenceCount - 1 ||
+        m_pdfStructure[pos.pageNo].sentenceCount == 0)
     {
         Position originalPos = pos;
         do
@@ -512,8 +529,9 @@ void AppController::driveSynthesis()
 
     uint16_t parsePage = m_synthPos.pageNo;
     uint16_t sentenceIdx = m_synthPos.sentenceIdx;
+    QString sentence = m_pageDataMap[parsePage].sentences[sentenceIdx];
     m_threadManager->submitTask(ThreadType::TTSManager,
-                                [this, parsePage, sentenceIdx]()
+                                [this, sentence, parsePage, sentenceIdx]()
                                 {
                                     {
                                         QMutexLocker lock(&m_cancelMutex);
@@ -523,9 +541,9 @@ void AppController::driveSynthesis()
                                             return;
                                         }
                                     }
-                                    m_ttsManager->synthesizeText(
-                                    m_pageDataMap[parsePage].sentences[sentenceIdx], parsePage,
-                                    sentenceIdx, m_appState.speakerId, m_appState.ttsSpeed);
+                                    m_ttsManager->synthesizeText(sentence, parsePage, sentenceIdx,
+                                                                 m_appState.speakerId,
+                                                                 m_appState.ttsSpeed);
                                 });
     m_synthQueue.enqueue(m_synthPos);
     nextPosition(m_synthPos);
@@ -549,8 +567,8 @@ void AppController::evictHistory()
 
 void AppController::updateCurrentPage(int page, bool force)
 {
-    if ((m_allPlaybacksPlayed || m_pdfStructure[m_appState.currentPage].sentenceCount == 0) &&
-        (m_allImagesDisplayed || m_pdfStructure[m_appState.currentPage].imageCount == 0) && force)
+    if (force || ((m_allPlaybacksPlayed || m_pdfStructure[m_appState.currentPage].sentenceCount == 0) &&
+                  (m_allImagesDisplayed || m_pdfStructure[m_appState.currentPage].imageCount == 0)))
     {
         // Skip empty pages
         while (m_pdfStructure[page].sentenceCount == 0 && m_pdfStructure[page].imageCount == 0)
@@ -611,9 +629,14 @@ void AppController::playTargetPlayback()
         if (m_plLookAhead.length() > 0)
         {
             m_plHistory.enqueue(m_playbackPos);
-            m_playbackPos = m_plLookAhead.dequeue();
+            m_plLookAhead.dequeue();
             evictHistory();
         }
+    }
+
+    if (currState != LoadState::Unloaded)
+    {
+        nextPosition(m_playbackPos);
     }
 }
 
@@ -672,6 +695,7 @@ void AppController::onPdfLoadFailed(const QString &error)
     emit isBusyChanged();
     m_appState.isLoaded = false;
     resetState();
+    m_pdfStructure.clear();
     emit errorOccurred(error);
 }
 
@@ -691,6 +715,9 @@ void AppController::onPageExtracted(uint16_t pageNumber, QVector<QString> senten
 {
     m_pageDataMap[pageNumber] = {.state = LoadState::Loaded, .sentences = sentences, .images = images};
     m_pageDataMap[pageNumber].playbacks.resize(sentences.length());
+
+    std::cout << "PPageNo: " << pageNumber << std::endl;
+    std::cout << "PPlaybacks: " << m_pageDataMap[pageNumber].playbacks.size() << std::endl;
 
     if (pageNumber == 0 && m_pdfStructure[pageNumber].imageCount > 0)
     {
@@ -723,6 +750,11 @@ void AppController::onSythesisComplete(uint16_t pageNumber, uint16_t sentenceIdx
         }
     }
 
+    emit statusMessage(QString("onSythesisComplete: %1 %2 %3")
+                       .arg(m_pageDataMap[pageNumber].sentences[sentenceIdx])
+                       .arg(pageNumber)
+                       .arg(sentenceIdx)); 
+
     m_pageDataMap[pageNumber].playbacks[sentenceIdx].setValues(LoadState::Loaded, audioData, sampleRate);
     m_plLookAhead.enqueue(Position{pageNumber, sentenceIdx});
     m_synthQueue.dequeue();
@@ -735,6 +767,15 @@ void AppController::onSythesisComplete(uint16_t pageNumber, uint16_t sentenceIdx
 
 void AppController::onSythesisFailed(uint16_t pageNumber, uint16_t sentenceIdx, const QString &error)
 {
+    {
+        QMutexLocker lock(&m_cancelMutex);
+        if (m_cancelList.contains({pageNumber, sentenceIdx}))
+        {
+            m_cancelList.removeOne({pageNumber, sentenceIdx});
+            return;
+        }
+    }
+
     m_pageDataMap[pageNumber].playbacks[sentenceIdx].setValues(LoadState::Failed);
     m_plLookAhead.enqueue(Position{pageNumber, sentenceIdx});
     m_synthQueue.dequeue();
@@ -759,3 +800,4 @@ void AppController::onMusicFinished()
         m_audioManager->playMusic(m_appState.musicPath);
     }
 }
+
