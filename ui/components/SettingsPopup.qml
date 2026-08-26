@@ -77,7 +77,6 @@ Popup {
         Column {
             width: parent.width
             spacing: 10
-            visible: true
 
             Text {
                 text: "Speakers"
@@ -85,73 +84,36 @@ Popup {
                 font.pixelSize: 14
             }
 
-            ComboBox {
+            CustomComboBox {
                 id: ttsVoiceList
                 width: parent.width
                 model: appController.ttsVoices
                 currentIndex: appController.ttsSpeaker
 
-                padding: 10
-                implicitWidth: contentItem.implicitWidth + padding * 2
+                onActivated: function(index) {
+                    appController.ttsSpeaker = index;
+                }
+            }
+        }
+
+        Column {
+            width: parent.width
+            spacing: 10
+
+            Text {
+                text: "TTS Models"
+                color: "white"
                 font.pixelSize: 14
+            }
 
-                background: Rectangle {
-                    radius: 8
-                    color: ttsVoiceList.pressed ? "#333333" : ttsVoiceList.hovered ? "#2A2A2A" : "#1F1F1F"
-                    border.color: "#3A3A3A"
-                }
+            CustomComboBox {
+                id: ttsModelList
+                width: parent.width
+                model: appController.ttsModels
+                currentIndex: appController.ttsModel
 
-                delegate: ItemDelegate {
-                    id: delegate
-
-                    required property var model
-                    required property int index
-
-                    width: ttsVoiceList.width
-                    contentItem: Text {
-                        text: delegate.model[ttsVoiceList.textRole]
-                        color: "#FF8F8F8F"
-                        font: ttsVoiceList.font
-                        elide: Text.ElideRight
-                        verticalAlignment: Text.AlignVCenter
-                        horizontalAlignment: Text.AlignHCenter
-                    }
-                    highlighted: ttsVoiceList.highlightedIndex === index
-                }
-
-                contentItem: Text {
-                    text: ttsVoiceList.currentText
-                    color: "white"
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
-                    leftPadding: 10
-                }
-
-                popup: Popup {
-                    y: ttsVoiceList.height - 1
-                    width: ttsVoiceList.width
-                    height: Math.min(contentItem.implicitHeight, root.height - topMargin - bottomMargin)
-                    padding: 1
-
-                    contentItem: ListView {
-                        clip: true
-                        implicitHeight: contentHeight
-                        model: ttsVoiceList.popup.visible ? ttsVoiceList.delegateModel : null
-                        currentIndex: ttsVoiceList.highlightedIndex
-
-                        ScrollIndicator.vertical: ScrollIndicator {}
-                    }
-
-                    background: Rectangle {
-                        color: "#FF040404"
-                        border.color: "#FF1F1F1F"
-                        radius: 2
-                    }
-                }
-
-                onCurrentIndexChanged: {
-                    appController.ttsSpeaker = currentIndex;
+                onActivated: function(index) {
+                    appController.ttsModel = index;
                 }
             }
         }

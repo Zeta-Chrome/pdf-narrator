@@ -10,7 +10,8 @@ ApplicationWindow {
     title: "PDF Narrator"
     color: "#000000"
 
-    property bool controlsVisible: true
+    property bool isReady: !appController.needsDownload && !appController.initializingTts
+    property bool controlsVisible: isReady
     property int hideControlsDelay: 3000
 
     Timer {
@@ -24,7 +25,7 @@ ApplicationWindow {
     }
 
     function showControls() {
-        controlsVisible = true;
+        controlsVisible = isReady;
         hideTimer.restart();
     }
 
@@ -32,11 +33,7 @@ ApplicationWindow {
         id: keyboardHandler
         focus: true
         
-        Keys.onPressed: (event) => {
-            if (!appController.isPdfLoaded) {
-                return;
-            }
-            
+        Keys.onPressed: (event) => {      
             switch(event.key) {
                 case Qt.Key_Space:
                     if (appController.isPlaying) {
@@ -48,34 +45,27 @@ ApplicationWindow {
                     break;
                     
                 case Qt.Key_Left:
-                    appController.prevLine();
+                    appController.appController.seekSentence(AppController.PREV);
                     event.accepted = true;
                     break;
                     
                 case Qt.Key_Right:
-                    appController.nextLine();
+                    appController.seekSentence(AppController.NEXT);
                     event.accepted = true;
                     break;
                     
                 case Qt.Key_Up:
-                    appController.prevPage();
+                    appController.goToPage(appController.currentPage + 1);
                     event.accepted = true;
                     break;
                     
                 case Qt.Key_Down:
-                    appController.nextPage();
+                    appController.goToPage(appController.currentPage - 1)();
                     event.accepted = true;
                     break;
                     
                 case Qt.Key_M:
                     appController.toggleMusic();
-                    event.accepted = true;
-                    break;
-                    
-                case Qt.Key_Escape:
-                    if (appController.isPlaying) {
-                        appController.pause();
-                    }
                     event.accepted = true;
                     break;
             }
@@ -101,27 +91,37 @@ ApplicationWindow {
         id: pdfCanvas
         anchors.fill: parent
         controlsVisible: root.controlsVisible
-   }
+    }
 
     Connections {
         target: appController
         
-        function onStatusMessage(message) {
+        function onStatusMessage(persistent, message) {
             console.log("Status:", message);
             statusText.text = message;
-            statusText.visible = true;
-            statusTimer.restart();
+            statusRect.visible = true;
+            errorRect.visible = false;
+            if (!persistent)
+            {
+                statusTimer.restart();
+            }
         }
         
-        function onErrorOccurred(error) {
+        function onErrorOccurred(persistent, error) {
             console.error("Error:", error);
             errorText.text = "Error: " + error;
-            errorText.visible = true;
-            errorTimer.restart();
+            errorRect.visible = true;
+            statusRect.visible = false;
+            if (!persistent)
+            {
+                errorTimer.restart();
+            }
         }
 
-        function onIsInitializedChanged() {
-            if (appController.isInitialized) {
+        function onInitializingTtsChanged() {
+            if (appController.initializingTts) {
+                root.controlsVisible = false;
+            } else {
                 root.showControls();
             }
         }
@@ -132,26 +132,29 @@ ApplicationWindow {
         id: statusRect
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: parent.height * 0.15
-        width: statusText.width + 40
+        anchors.bottomMargin: parent.height * 0.3
+        width: Math.min(statusText.implicitWidth + 40, root.width * 0.8)
         height: statusText.height + 20
-        color: "#CC000000"
+        color: "#66000000"
         radius: 10
-        visible: statusText.visible
-        z:1
-        
+        visible: false
+        z: 10
+
         Text {
             id: statusText
             anchors.centerIn: parent
+            width: parent.width - 40
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
             color: "#00FF00"
-            font.pixelSize: 16
-            visible: false
+            font.pixelSize: 18
+            font.bold: true
         }
-        
+
         Timer {
             id: statusTimer
             interval: 3000
-            onTriggered: statusText.visible = false
+            onTriggered: statusRect.visible = false
         }
     }
 
@@ -160,30 +163,34 @@ ApplicationWindow {
         id: errorRect
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: parent.height * 0.15
-        width: errorText.width + 40
+        anchors.bottomMargin: parent.height * 0.3
+
+        width: Math.min(errorText.implicitWidth + 40, root.width * 0.8)
         height: errorText.height + 20
-        color: "#CC000000"
+        color: "#66000000" 
         radius: 10
-        visible: errorText.visible
-        z:1
-        
+        visible: false
+        z: 10
+
         Text {
             id: errorText
             anchors.centerIn: parent
-            color: "#FF4444"
-            font.pixelSize: 16
-            visible: false
+            width: parent.width - 40
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            color: "#FF4444" 
+            font.pixelSize: 18
+            font.bold: true
         }
-        
+
         Timer {
             id: errorTimer
             interval: 5000
-            onTriggered: errorText.visible = false
+            onTriggered: errorRect.visible = false
         }
     }
 
-    TopControlBar {
+    TopControlBar {    
         id: topControlBar
         anchors.top: parent.top
         anchors.left: parent.left
@@ -203,6 +210,4 @@ ApplicationWindow {
         visible: root.controlsVisible
         z:2
     }
-
-    Splash {}
 }

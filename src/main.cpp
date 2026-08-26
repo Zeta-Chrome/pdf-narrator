@@ -9,30 +9,30 @@
 int main(int argc, char *argv[])
 {
 #ifdef Q_OS_LINUX
-    // Force FFmpeg to use PulseAudio backend on Linux
-    qputenv("QT_AUDIO_BACKEND", "pulseaudio");
+	// Force FFmpeg to use PulseAudio backend on Linux
+	qputenv("QT_AUDIO_BACKEND", "pulseaudio");
 #endif
-    
-    QGuiApplication app(argc, argv);
 
-    app.setOrganizationName("PDFNarrator");
-    app.setOrganizationDomain("pdfnarrator.app");
-    app.setApplicationName("PDF Narrator");
+	QGuiApplication app(argc, argv);
 
-    QQmlApplicationEngine engine;
+	app.setOrganizationName("cosmic");
+	app.setOrganizationDomain("cosmic.local");
+	app.setApplicationName("PDFNarrator");
 
-    // Create controller
-    AppController *controller = new AppController(&app);
-    engine.rootContext()->setContextProperty("appController", controller);
+	QQmlApplicationEngine engine;
 
-    // Register image provider for PDF images
-    engine.addImageProvider("pdfimages", new ImageProvider(controller));
+	// Create controller
+	AppController *controller = new AppController(&app);
+	engine.rootContext()->setContextProperty("appController", controller);
 
-    QObject::connect(
-        &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
-        []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
+	// Register image provider for PDF images
+	engine.addImageProvider("pdfimages", new ImageProvider(controller));
 
-    engine.loadFromModule("PDFNarrator", "Main");
+	QObject::connect(
+		&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
+		[]() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
-    return app.exec(); 
+	engine.loadFromModule("PDFNarrator", "Main");
+
+	return app.exec();
 }

@@ -1,30 +1,23 @@
-<svg width="800px" height="800px" viewBox="0 0 24 24" fill="#2E3440" xmlns="http://www.w3.org/2000/svg">
-
-  <!-- Mask to carve out audio waveform from the book pages -->
+<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Mask to carve out transparent audio waveform slots from the book -->
   <defs>
     <mask id="book-audio-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+      <!-- 1. White reveals the dark grey book -->
       <rect width="24" height="24" fill="#ffffff" />
+      
+      <!-- 2. Black strokes carve full transparency through the book -->
       <g stroke="#000000" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
         <path d="M  7.0 11.10 V 13.10" />
-        <path d="M  9.5 9.60 V 14.60" />
-        <path d="M  12.0 8.40 V 15.80" />
-        <path d="M  14.5 9.60 V 14.60" />
-        <path d="M  17.0 11.10 V 13.10" />
+        <path d="M  9.5  9.60 V 14.60" />
+        <path d="M 12.0  8.40 V 15.80" />
+        <path d="M 14.5  9.60 V 14.60" />
+        <path d="M 17.0 11.10 V 13.10" />
       </g>
     </mask>
   </defs>
 
-  <!-- Dark Crimson Red Waveform behind the cutouts (#8B111A) -->
-  <g stroke="#8B111A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M  7.0 11.10 V 13.10" />
-        <path d="M  9.5 9.60 V 14.60" />
-        <path d="M  12.0 8.40 V 15.80" />
-        <path d="M  14.5 9.60 V 14.60" />
-        <path d="M  17.0 11.10 V 13.10" />
-  </g>
-
-  <!-- Solid Black Book Pages with flattened spine curve (#0D0D0D) -->
-  <path fill="#0D0D0D"
+  <!-- Dark Grey Book (#202020) with transparent waveform cutouts -->
+  <path fill="#151515"
         mask="url(#book-audio-mask)"
         fill-rule="evenodd"
         clip-rule="evenodd"
@@ -42,3 +35,4 @@
            C  7.2 4.7 10.2 5.4 12.0 6.2
            Z" />
 </svg>
+

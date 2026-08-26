@@ -4,305 +4,288 @@
 #include "pdf_parser.h"
 #include "thread_manager.h"
 #include "tts_manager.h"
+#include <cstdint>
 #include <QObject>
-#include <QMap>
+#include <QSettings>
 #include <QQueue>
 #include <QTimer>
-#include <QJsonObject>
-#include <optional>
+#include <QDir>
+#include <qqmlregistration.h>
+#include <QNetworkAccessManager>
 
-enum class LoadState
-{
-    Unloaded,
-    Loading,
-    Loaded,
-    Failed
+enum class LoadState : uint8_t { UNLOADED, LOADING, LOADED, FAILED };
+
+struct Position {
+	uint16_t pageNo{ 0 };
+	uint16_t sentenceIdx{ 0 };
+
+	bool operator==(const Position &other) const
+	{
+		return other.pageNo == pageNo && other.sentenceIdx == sentenceIdx;
+	}
+	bool operator!=(const Position &other) const
+	{
+		return !(*this == other);
+	}
+	bool operator<(const Position &other) const
+	{
+		return (pageNo < other.pageNo) ||
+			   ((pageNo == other.pageNo) && (sentenceIdx < other.sentenceIdx));
+	}
+	bool operator>(const Position &other) const
+	{
+		return (*this != other) && !(*this < other);
+	}
+	bool operator<=(const Position &other) const
+	{
+		return !(*this > other);
+	}
+	bool operator>=(const Position &other) const
+	{
+		return !(*this < other);
+	}
 };
 
-struct PlaybackData
-{
-    LoadState state = LoadState::Unloaded;
-    QByteArray audio;
-    float sampleRate;
+struct AppState {
+	QString pdfPath{};
+	QString musicPath{};
+	uint16_t page{ 0 };
+	uint16_t sentenceIdx{ 0 };
+	uint16_t playbackIdx{ 0 };
+	int modelId{ 0 };
+	int speakerId{ 0 };
+	float ttsSpeed{ 1.0 };
+	bool musicEnabled{ true };
+	QSettings settings;
 
-    void setValues(LoadState st)
-    {
-        state = st;
-    }
-    void setValues(LoadState st, QByteArray au, float sr)
-    {
-        state = st;
-        audio = au;
-        sampleRate = sr;
-    }
+	void loadState();
+	void saveState();
+
+	template <typename T, typename U> void set(T &member, const QString &key, U &&value)
+	{
+		if (member == value)
+			return;
+
+		member = std::forward<U>(value);
+		settings.setValue(key, QVariant::fromValue(member));
+		settings.sync();
+	}
 };
 
-struct PageData
-{
-    LoadState state = LoadState::Unloaded;
-    QVector<QString> sentences;
-    QVector<QImage> images;
-    QVector<PlaybackData> playbacks;
+struct PageData {
+	LoadState state{ LoadState::UNLOADED };
+	QString errorMessage{};
+	QVector<QString> sentences{};
+	QVector<QImage> images{};
+	QList<PlaybackSegment> playbackSegments{};
 };
 
-struct Position
-{
-    uint16_t pageNo;
-    uint16_t sentenceIdx;
-
-    bool operator==(const Position &other) const
-    {
-        return other.pageNo == pageNo && other.sentenceIdx == sentenceIdx;
-    }
-    bool operator!=(const Position &other) const
-    {
-        return !(*this == other);
-    }
-    bool operator<(const Position &other) const
-    {
-        return (pageNo < other.pageNo) ||
-               ((pageNo == other.pageNo) && (sentenceIdx < other.sentenceIdx));
-    }
-    bool operator>(const Position &other) const
-    {
-        return (*this != other) && !(*this < other);
-    }
-    bool operator<=(const Position &other) const
-    {
-        return !(*this > other);
-    }
-    bool operator>=(const Position &other) const
-    {
-        return !(*this < other);
-    }
+struct PlaybackData {
+	LoadState state{ LoadState::UNLOADED };
+	Position pos{};
+	QString errorMessage{};
+	QByteArray audio{};
+	int sampleRate{};
 };
 
-struct AppState
-{
-    bool isLoaded = false;
-    QString pdfPath = "";
-    QString musicPath = "";
-    uint16_t currentPage = 0;
-    uint16_t sentenceIdx = 0;
-    uint8_t imageIdx = 0;
-    int speakerId = 0;
-    float ttsSpeed = 1.0;
+class AppController : public QObject {
+	Q_OBJECT
+	QML_ELEMENT
+	QML_UNCREATABLE("AppController is provided from C++")
 
-    QJsonObject toJson() const
-    {
-        QJsonObject obj;
-        obj["PDFPath"] = pdfPath;
-        obj["MusicPath"] = musicPath;
-        obj["CurrentPage"] = currentPage;
-        obj["SentenceIdx"] = sentenceIdx;
-        obj["ImageIdx"] = imageIdx;
-        obj["SpeakerId"] = speakerId;
-        obj["TTSSpeed"] = ttsSpeed;
-
-        return obj;
-    }
-
-    void fromJson(const QJsonObject &obj)
-    {
-        pdfPath = obj.value("PDFPath").toString();
-        if (!pdfPath.isEmpty())
-        {
-            isLoaded = true;
-        }
-
-        musicPath = obj.value("MusicPath").toString();
-        currentPage = obj.value("CurrentPage").toInt();
-        sentenceIdx = obj.value("SentenceIdx").toInt();
-        imageIdx = obj.value("ImageIdx").toInt();
-        speakerId = obj.value("SpeakerId").toInt();
-        ttsSpeed = obj.value("TTSSpeed").toDouble();
-    }
-};
-
-class AppController : public QObject
-{
-    Q_OBJECT
-    Q_PROPERTY(bool isInitialized READ isInitialized NOTIFY isInitializedChanged)
-    Q_PROPERTY(bool isPlaying READ isPlaying NOTIFY isPlayingChanged)
-    Q_PROPERTY(bool isRestart READ isRestart NOTIFY isRestartChanged)
-    Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
-    Q_PROPERTY(int totalPages READ totalPages NOTIFY totalPagesChanged)
-    Q_PROPERTY(int currentPage READ currentPage WRITE goToPage NOTIFY currentPageChanged)
-    Q_PROPERTY(bool isMusicEnabled READ isMusicEnabled NOTIFY isMusicEnabledChanged)
-    Q_PROPERTY(float ttsSpeed READ ttsSpeed WRITE setTtsSpeed NOTIFY ttsSpeedChanged)
-    Q_PROPERTY(float ttsSpeaker READ ttsSpeaker WRITE setTtsSpeaker NOTIFY ttsSpeakerChanged)
-    Q_PROPERTY(QStringList ttsVoices READ ttsVoices NOTIFY ttsVoicesChanged)
-    Q_PROPERTY(float musicVolume READ musicVolume WRITE setMusicVolume NOTIFY musicVolumeChanged)
-    Q_PROPERTY(QString imageId READ imageId NOTIFY imageIdChanged)
+	Q_PROPERTY(bool needsDownload READ needsDownload NOTIFY needsDownloadChanged)
+	Q_PROPERTY(bool initializingTts READ initializingTts NOTIFY initializingTtsChanged)
+	Q_PROPERTY(PlaybackState playbackState READ playbackState NOTIFY playbackStateChanged)
+	Q_PROPERTY(int totalPages READ totalPages NOTIFY totalPagesChanged)
+	Q_PROPERTY(int currentPage READ currentPage WRITE goToPage NOTIFY currentPageChanged)
+	Q_PROPERTY(QStringList ttsModels READ ttsModels CONSTANT)
+	Q_PROPERTY(QStringList ttsVoices READ ttsVoices NOTIFY ttsVoicesChanged)
+	Q_PROPERTY(int ttsModel READ ttsModel WRITE setTtsModel NOTIFY ttsModelChanged)
+	Q_PROPERTY(float ttsSpeed READ ttsSpeed WRITE setTtsSpeed NOTIFY ttsSpeedChanged)
+	Q_PROPERTY(int ttsSpeaker READ ttsSpeaker WRITE setTtsSpeaker NOTIFY ttsSpeakerChanged)
+	Q_PROPERTY(bool isMusicEnabled READ isMusicEnabled NOTIFY isMusicEnabledChanged)
+	Q_PROPERTY(float musicVolume READ musicVolume WRITE setMusicVolume NOTIFY musicVolumeChanged)
+	Q_PROPERTY(QString imageId READ imageId NOTIFY imageIdChanged)
 
 public:
-    explicit AppController(QObject *parent = nullptr);
-    ~AppController();
+	explicit AppController(QObject *parent = nullptr);
+	~AppController();
 
-    // Property getters
-    bool isInitialized() const
-    {
-        return m_isInitialized;
-    }
+	// Property getters
+	enum class PlaybackState : uint8_t { BUSY, PLAYING, PAUSED, RESTART };
+	Q_ENUM(PlaybackState)
 
-    bool isPlaying() const
-    {
-        return m_isPlaying;
-    }
+	enum class SeekDirection : uint8_t { NONE, NEXT, PREV };
+	Q_ENUM(SeekDirection)
 
-    bool isRestart() const
-    {
-        return m_isRestart;
-    }
+	bool needsDownload() const
+	{
+		return m_needsDownload;
+	}
 
-    bool isBusy() const
-    {
-        return m_isBusy;
-    }
+	bool initializingTts() const
+	{
+		return m_initializingTts;
+	}
 
-    int totalPages() const
-    {
-        return m_totalPages;
-    }
+	PlaybackState playbackState() const
+	{
+		return m_playbackState;
+	}
 
-    int currentPage() const
-    {
-        return m_appState.currentPage;
-    }
+	int totalPages() const
+	{
+		return m_totalPages;
+	}
 
-    float ttsSpeed() const
-    {
-        return m_appState.ttsSpeed;
-    }
+	int currentPage() const
+	{
+		return m_appState.page;
+	}
 
-    QStringList ttsVoices() const
-    {
-        return m_ttsManager->getVoices();
-    }
+	int ttsModel() const
+	{
+		return m_appState.modelId;
+	}
 
-    int ttsSpeaker() const
-    {
-        return m_appState.speakerId;
-    }
+	float ttsSpeed() const
+	{
+		return m_appState.ttsSpeed;
+	}
 
-    float musicVolume() const
-    {
-        return m_audioManager->musicVolume();
-    }
+	int ttsSpeaker() const
+	{
+		return m_appState.speakerId;
+	}
 
-    bool isMusicEnabled() const
-    {
-        return m_audioManager->isMusicEnabled();
-    }
+	QString imageId() const
+	{
+		return m_currentImage.has_value() ? QString("%1").arg(m_imageId) : "";
+	}
 
-    QString imageId() const
-    {
-        return m_currentImage.has_value() ? QString("%1").arg(m_imageId) : "";
-    }
+	QImage currentImage()
+	{
+		return m_currentImage.value_or(QImage());
+	}
 
-    QImage currentImage()
-    {
-        return m_currentImage.value_or(QImage());
-    }
+	float musicVolume() const
+	{
+		return m_audioManager->musicVolume();
+	}
 
-    // Property setters
-    void setTtsSpeed(float speed);
-    void setTtsSpeaker(int speakerId);
-    void setMusicVolume(float volume)
-    {
-        m_audioManager->setMusicVolume(volume);
-    }
+	bool isMusicEnabled() const
+	{
+		return m_audioManager->isMusicEnabled();
+	}
 
-    void initialize();
-    Q_INVOKABLE void openPDF(const QString &filePath);
-    Q_INVOKABLE void openMusic(const QString &musicPath);
-    Q_INVOKABLE void toggleMusic();
-    Q_INVOKABLE void pause();
-    Q_INVOKABLE void play();
-    Q_INVOKABLE void restart();
-    Q_INVOKABLE void prevLine();
-    Q_INVOKABLE void nextLine();
-    Q_INVOKABLE void prevPage();
-    Q_INVOKABLE void nextPage();
-    void goToPage(uint16_t page);
+	QStringList ttsModels() const;
+	QStringList ttsVoices() const;
+
+	// Property setters
+	void setTtsModel(int modelId);
+	void setTtsSpeed(float speed);
+	void setTtsSpeaker(int speakerId);
+	void setMusicVolume(float volume)
+	{
+		m_audioManager->setMusicVolume(volume);
+	}
+
+	// QML Invokables
+	Q_INVOKABLE void download();
+	Q_INVOKABLE void openPDF(const QString &uri);
+	Q_INVOKABLE void openMusic(const QString &uri);
+	Q_INVOKABLE void toggleMusic();
+	Q_INVOKABLE void pause();
+	Q_INVOKABLE void play();
+	Q_INVOKABLE void restart();
+	Q_INVOKABLE void seekSentence(SeekDirection dir);
+	Q_INVOKABLE void goToPage(uint16_t page);
 
 signals:
-    void errorOccurred(const QString &error);
-    void statusMessage(const QString &message);
-    void isInitializedChanged();
-    void isPlayingChanged();
-    void isBusyChanged();
-    void isRestartChanged();
-    void totalPagesChanged();
-    void currentPageChanged();
-    void ttsSpeedChanged();
-    void ttsVoicesChanged();
-    void ttsSpeakerChanged();
-    void musicVolumeChanged();
-    void isMusicEnabledChanged();
-    void imageIdChanged();
+	void statusMessage(bool persistent, const QString &message);
+	void errorOccurred(bool persistent, const QString &error);
+	void downloadProgress(float percentage);
+	void needsDownloadChanged();
+	void initializingTtsChanged();
+	void playbackStateChanged();
+	void totalPagesChanged();
+	void currentPageChanged();
+	void ttsVoicesChanged();
+	void ttsModelChanged();
+	void ttsSpeedChanged();
+	void ttsSpeakerChanged();
+	void musicVolumeChanged();
+	void isMusicEnabledChanged();
+	void imageIdChanged();
 
 private slots:
-    void onTtsInitializationComplete();
-    void onTtsInitializationFailed(QString error);
-    void onPdfLoaded(int totalPages);
-    void onPdfLoadFailed(const QString &error);
-    void onPdfStructureExtracted(QVector<PageIndex> structure);
-    void onPageExtracted(uint16_t pageNumber, QVector<QString> sentences, QVector<QImage> images);
-    void onPageExtractionFailed(uint16_t pageNumber, const QString &error);
-    void onSythesisComplete(uint16_t pageNumber, uint16_t sentenceIdx, const QByteArray &audioData,
-                            int sampleRate);
-    void onSythesisFailed(uint16_t pageNumber, uint16_t sentenceIdx, const QString &error);
-    void onSpeechFinished(uint16_t pageNumber, uint16_t sentenceIdx);
-    void onMusicFinished();
+	void onTtsInitializationComplete();
+	void onTtsInitializationFailed(const QString &error);
+	void onPdfLoaded(int pageCount, const QVector<uint16_t> &sentenceCounts);
+	void onPdfLoadFailed(const QString &error);
+	void onPageExtracted(int pageNumber, const QStringList &sentences, const QList<QImage> &images,
+						 const QList<PlaybackSegment> &segments, uint8_t genId);
+	void onPageExtractionFailed(int pageNumber, const QString &error, uint8_t genId);
+	void onSynthesisComplete(uint16_t page, uint16_t sentenceIdx, const QByteArray &audioData,
+							 int sampleRate, uint8_t genId);
+	void onSynthesisFailed(uint16_t page, uint16_t sentenceIdx, const QString &error,
+						   uint8_t genId);
+	void onSpeechFinished(uint16_t page, uint16_t sentenceIdx);
+	void onMusicFinished();
 
 private:
-    void loadState();
-    void saveState();
-    void navigateTo(Position target);
-    void cancelOutstandingTasks(Position target, bool all = false);
-    void resetState();
-    void parsePage(uint16_t pageNumber);
-    void prevPosition(Position &pos);
-    void nextPosition(Position &pos);
-    bool isEndPosition(Position &pos);
-    void driveSynthesis();
-    void evictHistory();
-    void updateCurrentPage(int page, bool force = false);
-    void playTargetPlayback();
-    void restartImageTimer();
-    void updateImage();
+	void checkDownloads();
+	void downloadModel(QNetworkAccessManager *networkManager);
+	void initializeTts();
+	void initialize();
+	bool prevPosition(Position &pos);
+	bool nextPosition(Position &pos);
+	void resetState();
+	void parsePage(uint16_t page);
+	void parseTillPage(uint16_t page);
+	bool isPositionValid(Position &pos);
+	void driveSynthesis();
+	void updateCurrentPage(uint16_t page);
+	void evictHistory();
+	void drivePlayback();
+	void changeSynthesisPos(Position pos);
+	void setPlaybackIdx();
 
-    std::unique_ptr<PDFParser> m_pdfParser;
-    std::unique_ptr<TTSManager> m_ttsManager;
-    std::unique_ptr<AudioManager> m_audioManager;
-    std::unique_ptr<ThreadManager> m_threadManager;
+private:
+	std::unique_ptr<PDFParser> m_pdfParser;
+	std::unique_ptr<TTSManager> m_ttsManager;
+	std::unique_ptr<AudioManager> m_audioManager;
+	std::unique_ptr<ThreadManager> m_threadManager;
 
-    bool m_isBusy = false;
-    bool m_isPlaying = true;
-    bool m_isRestart = false;
-    bool m_isPdfLoaded = false;
-    bool m_isInitialized = false;
+	AppState m_appState;
+	QDir m_modelsDir;
+	QQueue<QString> m_downloadQueue;
+	QMap<uint16_t, PageData> m_pageDataMap;
+	QVector<uint16_t> m_sentenceCounts;
 
-    AppState m_appState;
-    uint16_t m_totalPages = 0;
-    QMap<uint16_t, PageData> m_pageDataMap;
-    QVector<PageIndex> m_pdfStructure;
-    Position m_synthPos = {0, 0};
-    Position m_playbackPos = {0, 0};
-    QQueue<Position> m_plLookAhead;  // preloaded playbacks
-    QQueue<Position> m_plHistory;    // previous playbacks
-    QQueue<Position> m_synthQueue;   // sentences under synthesis
-    uint8_t m_maxLookAhead = 10;
-    uint8_t m_maxHistory = 5;
-    uint8_t m_maxSynth = 5;
-    QMutex m_cancelMutex;
-    QVector<Position> m_cancelList;
-    bool m_allPlaybacksPlayed = true;
+	QQueue<Position> m_synthesizing;
+	QQueue<PlaybackData> m_playbacks;
 
-    QTimer m_imageTimer;
-    uint32_t m_imageId = 0;
-    bool m_allImagesDisplayed = false;
-    std::optional<QImage> m_coverImage;
-    std::optional<QImage> m_currentImage;
+	QTimer m_imageTimer;
+	QTimer m_sentenceTimer;
+	std::optional<QImage> m_coverImage;
+	std::optional<QImage> m_currentImage;
+
+	std::atomic<uint8_t> m_parseGenId{ 0 };
+	std::atomic<uint8_t> m_synthesisGenId{ 0 };
+	uint16_t m_totalPages{ 0 };
+	uint16_t m_parsePage{ 0 };
+	uint32_t m_imageId{ 0 };
+	Position m_synthesisPos;
+	SeekDirection m_seekDirection{ SeekDirection::NONE };
+	PlaybackState m_playbackState{ PlaybackState::PLAYING };
+
+	uint8_t m_lookAheadCount{ 0 };
+	uint8_t m_maxLookAheadCount{ 5 };
+	uint8_t m_historyCount{ 0 };
+	uint8_t m_maxHistoryCount{ 5 };
+	bool m_initializingTts{ false };
+	bool m_needsDownload{ false };
+	bool m_pdfLoaded{ false };
+	bool m_synthesisFinished{ false };
 };

@@ -7,7 +7,6 @@ build
 
 # Large runtime assets
 android/res
-assets/model
 
 # helper files
 .clangd
@@ -15,4 +14,4 @@ assets/model
 compile_commands.json
 exec
 
-
+.deps_cache/

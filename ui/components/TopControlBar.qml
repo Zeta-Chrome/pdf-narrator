@@ -6,7 +6,7 @@ import PDFNarrator
 
 Rectangle {
     id: root
-    color: "#3F8F8F8F"
+    color: "#af1f1f1f"
     property real windowHeight: 0
 
     RowLayout {
@@ -16,7 +16,7 @@ Rectangle {
 
         IconButton {
             id: openPDF
-            iconSource: "qrc:/PDFNarrator/assets/images/open_pdf.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/open_pdf.svg"
             onClicked: pdfDialog.open()
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
@@ -25,65 +25,75 @@ Rectangle {
 
         IconButton {
             id: openMusic
-            iconSource: "qrc:/PDFNarrator/assets/images/open_music.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/open_music.svg"
             onClicked: musicDialog.open()
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
 
-        Row {
-            spacing: 10
+        Item {
             Layout.preferredWidth: 120
+            Layout.fillHeight: true
 
-            TextField {
-                id: pageField
-                text: appController.totalPages == 0 ? 0 : appController.currentPage + 1
-                font.pixelSize: 16
-                horizontalAlignment: Text.AlignHCenter
-                color: "white"
+            Row {
+                anchors.centerIn: parent
+                spacing: 5
 
-                background: Rectangle {
-                    color: "transparent"
-                }
-
-                validator: IntValidator {
-                    bottom: 1
-                    top: appController.totalPages
-                }
-
-                onAccepted: {
-                    var pageNum = parseInt(text) - 1
-                    if (pageNum >= 0 && pageNum < appController.totalPages) {
-                        appController.goToPage(pageNum)
-                    } else {
-                        text = appController.currentPage + 1
+                TextField {
+                    id: pageField
+                    text: appController.totalPages === 0 ? "0" : (appController.currentPage + 1).toString()
+                    leftPadding: 0
+                    rightPadding: 0
+                    topPadding: 0
+                    bottomPadding: 0
+                    font.pixelSize: 16
+                    verticalAlignment: TextInput.AlignVCenter
+                    horizontalAlignment: TextInput.AlignHCenter
+                    color: "white"
+                    background: Rectangle {
+                        color: "transparent"
                     }
-                }
-                
-                Connections {
-                    target: appController
-                    function onCurrentPageChanged() {
-                        if (!pageField.activeFocus) {
-                            pageField.text = appController.currentPage + 1
+                    validator: IntValidator {
+                        bottom: 1
+                        top: Math.max(1, appController.totalPages)
+                    }
+                    onAccepted: {
+                        var pageNum = parseInt(text) - 1
+                        appController.goToPage(pageNum)
+                        focus = false
+                    }
+                    Connections {
+                        target: appController
+                        function onCurrentPageChanged() {
+                            if (!pageField.activeFocus) {
+                                pageField.text = (appController.currentPage + 1).toString()
+                            }
                         }
                     }
                 }
-            }
 
-            Text {
-                text: "/   " + String(appController.totalPages)
-                color: "white"
-                font.pixelSize: 16
-                anchors.verticalCenter: parent.verticalCenter
+                Text {
+                    text: "/"
+                    color: "white"
+                    font.pixelSize: 16
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                Text {
+                    text: appController.totalPages
+                    color: "white"
+                    font.pixelSize: 16
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
         }
 
         IconButton {
             id: toggleMusic
             iconSource: appController.isMusicEnabled ? 
-                        "qrc:/PDFNarrator/assets/images/music_on.svg" :
-                        "qrc:/PDFNarrator/assets/images/music_off.svg"
+                        "qrc:/qt/qml/PDFNarrator/assets/images/music_on.svg" :
+                        "qrc:/qt/qml/PDFNarrator/assets/images/music_off.svg"
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -92,7 +102,7 @@ Rectangle {
 
         IconButton {
             id: settings
-            iconSource: "qrc:/PDFNarrator/assets/images/settings.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/settings.svg"
             onClicked: settingsPopup.open()
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
@@ -105,9 +115,6 @@ Rectangle {
             nameFilters: ["PDF files (*.pdf)"]
             onAccepted: {
                 var path = selectedFile.toString();
-                if (path.startsWith("file://")) {
-                    path = path.substring(7);
-                }
                 appController.openPDF(path)
             }
         }
@@ -118,9 +125,6 @@ Rectangle {
             nameFilters: ["Audio files (*.mp3 *.wav *.ogg *.flac)"]
             onAccepted: {
                 var path = selectedFile.toString();
-                if (path.startsWith("file://")) {
-                    path = path.substring(7);
-                }
                 appController.openMusic(path)
             }
         }
@@ -131,6 +135,6 @@ Rectangle {
         x: parent.width - width - 10
         y: parent.height + 5
         width: parent.width * Style.settingsWFactor
-        height: root.windowHeight * Style.settingsHFactor
+        height: Math.min(implicitHeight + 25, root.windowHeight)  
     }
 }

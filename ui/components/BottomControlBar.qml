@@ -4,7 +4,7 @@ import PDFNarrator
 
 Rectangle {
     id: root
-    color: "#3F8F8F8F"
+    color: "#af1f1f1f"
 
     RowLayout {
         anchors.fill: parent
@@ -13,40 +13,40 @@ Rectangle {
 
         IconButton {
             id: prevPage 
-            iconSource: "qrc:/PDFNarrator/assets/images/prev_page.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/prev_page.svg"
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
-            onClicked: appController.prevPage()
+            onClicked: appController.goToPage(appController.currentPage - 1)
         }
 
         IconButton {
             id: prevLine 
-            iconSource: "qrc:/PDFNarrator/assets/images/prev_line.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/prev_line.svg"
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
-            onClicked: appController.prevLine()
+            onClicked: appController.seekSentence(AppController.PREV)
         }
 
         IconButton {
             id: nextLine 
-            iconSource: "qrc:/PDFNarrator/assets/images/prev_line.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/prev_line.svg"
             iconRotation: 180
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
-            onClicked: appController.nextLine()
+            onClicked: appController.seekSentence(AppController.NEXT)
         }
 
         IconButton {
             id: nextPage 
-            iconSource: "qrc:/PDFNarrator/assets/images/prev_page.svg"
+            iconSource: "qrc:/qt/qml/PDFNarrator/assets/images/prev_page.svg"
             iconRotation: 180
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true
             Layout.fillHeight: true
-            onClicked: appController.nextPage()
+            onClicked: appController.goToPage(appController.currentPage + 1)
         }
     }
 }
