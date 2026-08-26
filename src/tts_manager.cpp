@@ -143,8 +143,8 @@ void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenc
 
 		float gen_dur = (float)t.elapsed() / 1000;
 		float audio_dur = (float)audio->n / (float)audio->sample_rate;
-		qDebug() << "Audio: " << audio_dur << "\tGen" << gen_dur << "\tRTF:" << gen_dur / audio_dur;
-		qDebug() << "Text: " << text << "\n";
+		qInfo() << "Audio: " << audio_dur << "\tGen" << gen_dur << "\tRTF:" << gen_dur / audio_dur;
+		qInfo() << "Text: " << text << "\n";
 
 		if (!audio || audio->n == 0) {
 			emit synthesisFailed(pageNumber, sentenceId, "TTS generated no audio", genId);

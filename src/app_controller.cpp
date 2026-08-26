@@ -15,14 +15,17 @@
 static const QMap<QString, QString> g_modelSources = {
 	{ "kokoro-en-v0_19",
 	  "https://huggingface.com/ZetaChrome/pdf-narrator-models/resolve/main/kokoro-en-v0_19.tar.gz" },
+	{ "kokoro-int8-en-v0_19",
+	  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-en-v0_19.tar.bz2" },
 	{ "kitten-micro-en-v0_8",
 	  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-micro-en-v0_8.tar.bz2" },
-	{ "kitten-nano-en-v0_2",
-	  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-nano-en-v0_2-fp16.tar.bz2" }
 };
 
 static const QMap<QString, QStringList> g_modelVoices = {
 	{ "kokoro-en-v0_19",
+	  { "af", "af_bella", "af_nicole", "af_sarah", "af_sky", "am_adam", "am_michael", "bf_emma",
+		"bf_isabella", "bm_george", "bm_lewis" } },
+	{ "kokoro-int8-en-v0_19",
 	  { "af", "af_bella", "af_nicole", "af_sarah", "af_sky", "am_adam", "am_michael", "bf_emma",
 		"bf_isabella", "bm_george", "bm_lewis" } },
 	{ "kitten-micro-en-v0_8",
@@ -342,8 +345,6 @@ void AppController::setTtsSpeed(float speed)
 	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
 		m_synthesisGenId++;
 		m_synthesizing.clear();
-		m_playbackState = PlaybackState::BUSY;
-		emit playbackStateChanged();
 	} else {
 		driveSynthesis();
 	}
@@ -370,8 +371,6 @@ void AppController::setTtsSpeaker(int speakerId)
 	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
 		m_synthesisGenId++;
 		m_synthesizing.clear();
-		m_playbackState = PlaybackState::BUSY;
-		emit playbackStateChanged();
 	} else {
 		driveSynthesis();
 	}
@@ -388,17 +387,18 @@ void AppController::resetState()
 	m_currentImage.reset();
 	m_lookAheadCount = 0;
 	m_historyCount = 0;
-	m_imageId = 0;
 	m_synthesisFinished = false;
 	m_seekDirection = SeekDirection::NONE;
-	m_parseGenId++;
-	m_synthesisGenId++;
-	m_synthesizing.clear();
-	m_playbackState = PlaybackState::BUSY;
-	emit playbackStateChanged();
+	if (m_threadManager->queuedTaskCount(ThreadType::PDFParser) > 0)
+		m_parseGenId++;
+
+	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
+		m_synthesisGenId++;
+		m_synthesizing.clear();
+	}
+
+	m_imageId = 0;
 	emit imageIdChanged();
-	m_playbackState = PlaybackState::PLAYING;
-	emit playbackStateChanged();
 }
 
 void AppController::openPDF(const QString &uri)
@@ -477,8 +477,7 @@ void AppController::onPdfLoaded(int totalPages, const QVector<uint16_t> &sentenc
 	if (!isPositionValid(m_synthesisPos))
 		nextPosition(m_synthesisPos);
 
-	QString filename = m_appState.pdfPath.section("/", -1, -1);
-	emit statusMessage(false, QString("%1 Loaded : %2").arg(filename).arg(m_totalPages));
+	emit statusMessage(false, QString("PDF Loaded : %2").arg(m_totalPages));
 
 	m_playbackState = PlaybackState::PLAYING;
 	emit playbackStateChanged();
@@ -526,8 +525,10 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 									const QList<PlaybackSegment> &segments, uint8_t genId)
 {
 	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY)
+		if (m_playbackState == PlaybackState::BUSY) {
 			m_playbackState = PlaybackState::PLAYING;
+			emit playbackStateChanged();
+		}
 
 		driveSynthesis();
 		drivePlayback();
@@ -562,8 +563,10 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 void AppController::onPageExtractionFailed(int pageNumber, const QString &error, uint8_t genId)
 {
 	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY)
+		if (m_playbackState == PlaybackState::BUSY) {
 			m_playbackState = PlaybackState::PLAYING;
+			emit playbackStateChanged();
+		}
 
 		driveSynthesis();
 		drivePlayback();
@@ -638,8 +641,10 @@ void AppController::onSynthesisComplete(uint16_t pageNumber, uint16_t sentenceId
 										const QByteArray &audioData, int sampleRate, uint8_t genId)
 {
 	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY)
+		if (m_playbackState == PlaybackState::BUSY) {
 			m_playbackState = PlaybackState::PLAYING;
+			emit playbackStateChanged();
+		}
 
 		driveSynthesis();
 		drivePlayback();
@@ -666,8 +671,10 @@ void AppController::onSynthesisFailed(uint16_t pageNumber, uint16_t sentenceIdx,
 									  const QString &error, uint8_t genId)
 {
 	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY)
+		if (m_playbackState == PlaybackState::BUSY) {
 			m_playbackState = PlaybackState::PLAYING;
+			emit playbackStateChanged();
+		}
 
 		driveSynthesis();
 		drivePlayback();
@@ -718,7 +725,7 @@ void AppController::evictHistory()
 		front.audio.clear();
 		front.audio.squeeze();
 		int page = front.pos.pageNo;
-		if (front.pos.sentenceIdx == m_sentenceCounts[page] - 1) {
+		if (front.pos.sentenceIdx == m_sentenceCounts[page] - 1 && page < m_appState.page) {
 			while (page > 0 && m_pageDataMap[page].state != LoadState::UNLOADED)
 				m_pageDataMap.remove(page--);
 		}
@@ -793,11 +800,10 @@ void AppController::drivePlayback()
 		if (m_appState.sentenceIdx == playbackSegment.lastSentenceIdx) {
 			m_appState.playbackIdx++;
 			m_appState.set(m_appState.playbackIdx, "app/playbackIdx", m_appState.playbackIdx);
-			return;
-		} else if (m_appState.sentenceIdx > playbackSegment.firstSentenceIdx &&
-				   m_appState.sentenceIdx < playbackSegment.lastSentenceIdx && m_imageId > 0) {
-			return;
 		}
+
+		if (!(m_imageId == 0 || m_appState.sentenceIdx == playbackSegment.firstSentenceIdx))
+			return;
 	}
 
 	if (playbackSegment.hasImage()) {
@@ -841,10 +847,12 @@ void AppController::play()
 
 void AppController::restart()
 {
-	// PDF is always loaded her
+	// PDF is always loaded here
 	if (!m_pdfLoaded)
 		return;
 
+	m_playbackState = PlaybackState::BUSY;
+	emit playbackStateChanged();
 	resetState();
 	m_parsePage = 0;
 	updateCurrentPage(0);
@@ -864,11 +872,13 @@ void AppController::changeSynthesisPos(Position pos)
 	if (!isPositionValid(m_synthesisPos))
 		nextPosition(m_synthesisPos);
 
-	m_parseGenId++;
-	m_synthesisGenId++;
-	m_synthesizing.clear();
-	m_playbackState = PlaybackState::BUSY;
-	emit playbackStateChanged();
+	if (m_threadManager->queuedTaskCount(ThreadType::PDFParser) > 0)
+		m_parseGenId++;
+
+	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
+		m_synthesisGenId++;
+		m_synthesizing.clear();
+	}
 
 	driveSynthesis();
 }
