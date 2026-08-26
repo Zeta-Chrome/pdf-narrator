@@ -39,7 +39,7 @@ chmod +x build.sh
 | **Linux Release Build** | `./build.sh RELEASE` | Symlink `./exec` |
 | **Debian Package (`.deb`)** | `./build.sh RELEASE DEB` | `build/linux-release/*.deb` |
 | **Android APK** | `./build.sh ANDROID` | `build/android-release/android-build/pdfnarrator.apk` |
-| **Clean Rebuild** | `./build.sh CLEAN [DEBUG|RELEASE|ANDROID]` | Reconfigures build directory from scratch |
+| **Clean Rebuild** | `./build.sh CLEAN [DEBUG\|RELEASE\|ANDROID]` | Reconfigures build directory from scratch |
 | **Android Logcat Monitor** | `./build.sh MONITOR` | Auto-attaching, process-filtered Android logger |
 
 ---
