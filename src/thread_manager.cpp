@@ -5,7 +5,6 @@ ThreadManager::ThreadManager(QObject *parent)
 {
 	createThread(ThreadType::PDFParser, "PDFThread");
 	createThread(ThreadType::TTSManager, "TTSThread");
-	createThread(ThreadType::PlaybackEngine, "PlaybackEngine");
 }
 
 ThreadManager::~ThreadManager()

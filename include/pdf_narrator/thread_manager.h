@@ -4,7 +4,7 @@
 #include <QThread>
 #include <QHash>
 
-enum class ThreadType { PDFParser, TTSManager, PlaybackEngine };
+enum class ThreadType : uint8_t { PDFParser, TTSManager };
 
 class ThreadManager : public QObject {
 	Q_OBJECT
