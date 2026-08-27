@@ -10,8 +10,12 @@ ApplicationWindow {
     title: "PDF Narrator"
     color: "#000000"
 
-    property bool isReady: !appController.needsDownload && !appController.initializingTts
-    property bool controlsVisible: isReady
+    // Safe fallbacks to prevent undefined lookup crashes during startup
+    readonly property bool isEditing: (typeof topControlBar !== "undefined" && topControlBar !== null) ? topControlBar.isEditingPage : false
+    readonly property bool isReady: !appController.needsDownload && !appController.initializingTts
+
+    property bool manualControlsVisible: true
+    property bool controlsVisible: isReady && (manualControlsVisible || isEditing)
     property int hideControlsDelay: 3000
 
     Timer {
@@ -20,13 +24,27 @@ ApplicationWindow {
         running: false
         repeat: false
         onTriggered: {
-            root.controlsVisible = false;
+            if (!root.isEditing) {
+                root.manualControlsVisible = false;
+            }
         }
     }
 
     function showControls() {
-        controlsVisible = isReady;
-        hideTimer.restart();
+        manualControlsVisible = true;
+        if (!root.isEditing) {
+            hideTimer.restart();
+        } else {
+            hideTimer.stop();
+        }
+    }
+
+    onIsEditingChanged: {
+        if (isEditing) {
+            hideTimer.stop();
+        } else {
+            hideTimer.restart();
+        }
     }
 
     Item {
@@ -45,7 +63,7 @@ ApplicationWindow {
                     break;
                     
                 case Qt.Key_Left:
-                    appController.appController.seekSentence(AppController.PREV);
+                    appController.seekSentence(AppController.PREV);
                     event.accepted = true;
                     break;
                     
@@ -60,7 +78,7 @@ ApplicationWindow {
                     break;
                     
                 case Qt.Key_Down:
-                    appController.goToPage(appController.currentPage - 1)();
+                    appController.goToPage(appController.currentPage - 1);
                     event.accepted = true;
                     break;
                     
@@ -77,10 +95,7 @@ ApplicationWindow {
         hoverEnabled: true
         propagateComposedEvents: true
 
-        onPositionChanged: {
-            root.showControls();
-        }
-
+        onPositionChanged: root.showControls()
         onClicked: {
             root.showControls();
             keyboardHandler.forceActiveFocus();
@@ -96,44 +111,100 @@ ApplicationWindow {
     Connections {
         target: appController
         
+        function onInfoMessage(message) {
+            infoText.text = message;
+            infoRect.visible = true;
+            console.log(infoText.text)
+        }
+
+        function onInfoClose() {
+            infoRect.visible = false;
+        }
+        
         function onStatusMessage(persistent, message) {
-            console.log("Status:", message);
-            statusText.text = message;
+            statusText.text = "Status: " + message;
             statusRect.visible = true;
             errorRect.visible = false;
-            if (!persistent)
-            {
+            if (!persistent) {
                 statusTimer.restart();
             }
+            console.log(statusText.text)
         }
         
         function onErrorOccurred(persistent, error) {
-            console.error("Error:", error);
             errorText.text = "Error: " + error;
             errorRect.visible = true;
             statusRect.visible = false;
-            if (!persistent)
-            {
+            if (!persistent) {
                 errorTimer.restart();
             }
+            console.log(errorText.text)
         }
 
         function onInitializingTtsChanged() {
             if (appController.initializingTts) {
-                root.controlsVisible = false;
+                root.manualControlsVisible = false;
             } else {
                 root.showControls();
             }
         }
     }
 
-    // Status message display
+    // Top control bar
+    TopControlBar {    
+        id: topControlBar
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: parent.height * Style.topBarHFactor
+        visible: root.controlsVisible
+        windowHeight: root.height
+        z: 2
+    }
+
+    // Bottom control bar
+    BottomControlBar {
+        id: bottomControlBar
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: parent.height * Style.bottomBarHFactor
+        visible: root.controlsVisible
+        z: 2
+    }
+
+    // Info Message Display
+    Rectangle {
+        id: infoRect
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: parent.height * 0.1
+        width: Math.min(infoText.implicitWidth + 40, root.width * 0.9)
+        height: infoText.height + 20
+        color: "#AA000000"
+        radius: 10
+        visible: false
+        z: 10
+
+        Text {
+            id: infoText
+            anchors.centerIn: parent
+            width: parent.width - 40
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            color: "#EFFFFF"
+            font.pixelSize: 18
+            font.bold: true
+        }
+    }
+
+    // Status Message Display
     Rectangle {
         id: statusRect
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: parent.height * 0.3
-        width: Math.min(statusText.implicitWidth + 40, root.width * 0.8)
+        anchors.bottomMargin: parent.height * 0.2
+        width: Math.min(statusText.implicitWidth + 40, root.width * 0.9)
         height: statusText.height + 20
         color: "#66000000"
         radius: 10
@@ -158,14 +229,13 @@ ApplicationWindow {
         }
     }
 
-    // Error message display
+    // Error Message Display
     Rectangle {
         id: errorRect
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottomMargin: parent.height * 0.3
-
-        width: Math.min(errorText.implicitWidth + 40, root.width * 0.8)
+        anchors.bottomMargin: parent.height * 0.2
+        width: Math.min(errorText.implicitWidth + 40, root.width * 0.9)
         height: errorText.height + 20
         color: "#66000000" 
         radius: 10
@@ -190,24 +260,7 @@ ApplicationWindow {
         }
     }
 
-    TopControlBar {    
-        id: topControlBar
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: parent.height * Style.topBarHFactor
-        visible: root.controlsVisible
-        windowHeight: root.height
-        z:2
-    }
-
-    BottomControlBar {
-        id: bottomControlBar
-        anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: parent.height * Style.bottomBarHFactor
-        visible: root.controlsVisible
-        z:2
+    Component.onCompleted: {
+        showControls();
     }
 }

@@ -9,6 +9,9 @@ Rectangle {
     color: "#af1f1f1f"
     property real windowHeight: 0
 
+    // Expose whether the user is currently editing the page field
+    readonly property bool isEditingPage: pageField.activeFocus
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 5
@@ -92,7 +95,7 @@ Rectangle {
         IconButton {
             id: toggleMusic
             iconSource: appController.isMusicEnabled ? 
-                        "qrc:/qt/qml/PDFNarrator/assets/images/music_on.svg" :
+                        "qrc:/qt/qml/PDFNarrator/assets/images/music_on.svg" : 
                         "qrc:/qt/qml/PDFNarrator/assets/images/music_off.svg"
             buttonRadius: Style.buttonRadiusFactor
             Layout.fillWidth: true

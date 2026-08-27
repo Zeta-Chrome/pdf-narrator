@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_manager.h"
+#include "foreground_playback_service.h"
 #include "pdf_parser.h"
 #include "thread_manager.h"
 #include "tts_manager.h"
@@ -12,6 +13,8 @@
 #include <QDir>
 #include <qqmlregistration.h>
 #include <QNetworkAccessManager>
+#include <qtmetamacros.h>
+#include "model_downloader.h"
 
 enum class LoadState : uint8_t { UNLOADED, LOADING, LOADED, FAILED };
 
@@ -55,11 +58,18 @@ struct AppState {
 	int modelId{ 0 };
 	int speakerId{ 0 };
 	float ttsSpeed{ 1.0 };
+	float musicVolume{ 0.3f };
 	bool musicEnabled{ true };
 	QSettings settings;
 
 	void loadState();
 	void saveState();
+
+	template <typename T, typename DefaultType>
+	void get(T &member, const QString &key, DefaultType &&defaultValue)
+	{
+		member = settings.value(key, QVariant::fromValue(defaultValue)).template value<T>();
+	}
 
 	template <typename T, typename U> void set(T &member, const QString &key, U &&value)
 	{
@@ -95,6 +105,7 @@ class AppController : public QObject {
 
 	Q_PROPERTY(bool needsDownload READ needsDownload NOTIFY needsDownloadChanged)
 	Q_PROPERTY(bool initializingTts READ initializingTts NOTIFY initializingTtsChanged)
+	Q_PROPERTY(bool isBusy READ isBusy NOTIFY isBusyChanged)
 	Q_PROPERTY(PlaybackState playbackState READ playbackState NOTIFY playbackStateChanged)
 	Q_PROPERTY(int totalPages READ totalPages NOTIFY totalPagesChanged)
 	Q_PROPERTY(int currentPage READ currentPage WRITE goToPage NOTIFY currentPageChanged)
@@ -112,7 +123,7 @@ public:
 	~AppController();
 
 	// Property getters
-	enum class PlaybackState : uint8_t { BUSY, PLAYING, PAUSED, RESTART };
+	enum class PlaybackState : uint8_t { PLAYING, PAUSED, RESTART };
 	Q_ENUM(PlaybackState)
 
 	enum class SeekDirection : uint8_t { NONE, NEXT, PREV };
@@ -126,6 +137,11 @@ public:
 	bool initializingTts() const
 	{
 		return m_initializingTts;
+	}
+
+	bool isBusy() const
+	{
+		return m_isBusy;
 	}
 
 	PlaybackState playbackState() const
@@ -185,13 +201,12 @@ public:
 	void setTtsModel(int modelId);
 	void setTtsSpeed(float speed);
 	void setTtsSpeaker(int speakerId);
-	void setMusicVolume(float volume)
-	{
-		m_audioManager->setMusicVolume(volume);
-	}
+	void setMusicVolume(float volume);
 
 	// QML Invokables
 	Q_INVOKABLE void download();
+	Q_INVOKABLE void downloadModel(int modelId);
+	Q_INVOKABLE bool isModelDownloaded(int modelId) const;
 	Q_INVOKABLE void openPDF(const QString &uri);
 	Q_INVOKABLE void openMusic(const QString &uri);
 	Q_INVOKABLE void toggleMusic();
@@ -202,11 +217,16 @@ public:
 	Q_INVOKABLE void goToPage(uint16_t page);
 
 signals:
+	void infoMessage(const QString &message);
+	void infoClose();
 	void statusMessage(bool persistent, const QString &message);
 	void errorOccurred(bool persistent, const QString &error);
 	void downloadProgress(float percentage);
+	void modelDownloadProgress(int modelId, float percentage);
+	void modelDownloadFinished(int modelId, bool success);
 	void needsDownloadChanged();
 	void initializingTtsChanged();
+	void isBusyChanged();
 	void playbackStateChanged();
 	void totalPagesChanged();
 	void currentPageChanged();
@@ -235,9 +255,14 @@ private slots:
 
 private:
 	void checkDownloads();
-	void downloadModel(QNetworkAccessManager *networkManager);
+	void processDownloadQueue(QNetworkAccessManager *networkManager);
 	void initializeTts();
 	void initialize();
+	void applyTtsModel(int modelId);
+	// Cancels whatever synthesis request is currently outstanding (if any)
+	// and resets bookkeeping so a fresh one can be submitted. Safe to call
+	// even when nothing is actually in flight.
+	void cancelSynthesis();
 	bool prevPosition(Position &pos);
 	bool nextPosition(Position &pos);
 	void resetState();
@@ -256,10 +281,11 @@ private:
 	std::unique_ptr<TTSManager> m_ttsManager;
 	std::unique_ptr<AudioManager> m_audioManager;
 	std::unique_ptr<ThreadManager> m_threadManager;
+	std::unique_ptr<ModelDownloader> m_modelDownloader;
+	std::unique_ptr<ForegroundPlaybackService> m_foregroundService;
 
 	AppState m_appState;
 	QDir m_modelsDir;
-	QQueue<QString> m_downloadQueue;
 	QMap<uint16_t, PageData> m_pageDataMap;
 	QVector<uint16_t> m_sentenceCounts;
 
@@ -280,12 +306,16 @@ private:
 	SeekDirection m_seekDirection{ SeekDirection::NONE };
 	PlaybackState m_playbackState{ PlaybackState::PLAYING };
 
+	int m_pendingModelId{ -1 };
+
 	uint8_t m_lookAheadCount{ 0 };
 	uint8_t m_maxLookAheadCount{ 5 };
 	uint8_t m_historyCount{ 0 };
 	uint8_t m_maxHistoryCount{ 5 };
 	bool m_initializingTts{ false };
 	bool m_needsDownload{ false };
+	bool m_isBusy{ false };
 	bool m_pdfLoaded{ false };
 	bool m_synthesisFinished{ false };
+	bool m_synthesisTaskInFlight{ false };
 };

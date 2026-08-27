@@ -1,42 +1,9 @@
 #include "app_controller.h"
+#include "model_downloader.h"
 #include <QStandardPaths>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QProcess>
-
-#ifdef Q_OS_ANDROID
-#include <QJniObject>
-#include <QJniEnvironment>
-#endif
 
 #define SENTENCE_BREAK_PERIOD 250
 #define IMAGE_DISPLAY_PERIOD 3000
-
-static const QMap<QString, QString> g_modelSources = {
-	{ "kokoro-en-v0_19",
-	  "https://huggingface.com/ZetaChrome/pdf-narrator-models/resolve/main/kokoro-en-v0_19.tar.gz" },
-	{ "kokoro-int8-en-v0_19",
-	  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-en-v0_19.tar.bz2" },
-	{ "kitten-micro-en-v0_8",
-	  "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kitten-micro-en-v0_8.tar.bz2" },
-};
-
-static const QMap<QString, QStringList> g_modelVoices = {
-	{ "kokoro-en-v0_19",
-	  { "af", "af_bella", "af_nicole", "af_sarah", "af_sky", "am_adam", "am_michael", "bf_emma",
-		"bf_isabella", "bm_george", "bm_lewis" } },
-	{ "kokoro-int8-en-v0_19",
-	  { "af", "af_bella", "af_nicole", "af_sarah", "af_sky", "am_adam", "am_michael", "bf_emma",
-		"bf_isabella", "bm_george", "bm_lewis" } },
-	{ "kitten-micro-en-v0_8",
-	  { "Jasper", "Bella", "Bruno", "Luna", "Hugo", "Rosie", "Leo", "Kiki" } },
-};
-
-#if defined(Q_OS_ANDROID)
-static const QStringList g_models = { "kokoro-en-v0_19", "kitten-micro-en-v0_8" };
-#else
-static const QStringList g_models = { "kokoro-en-v0_19", "kitten-micro-en-v0_8" };
-#endif
 
 void AppState::loadState()
 {
@@ -48,6 +15,7 @@ void AppState::loadState()
 	modelId = settings.value("tts/modelId", 0).toInt();
 	speakerId = settings.value(QString("tts/%1/speakerId").arg(modelId), 0).toInt();
 	ttsSpeed = settings.value("tts/speed", 1.0f).toFloat();
+	musicVolume = (float)settings.value("app/musicVolume", 0.3).toDouble();
 	musicEnabled = settings.value("app/musicEnabled", true).toBool();
 }
 
@@ -61,6 +29,7 @@ void AppState::saveState()
 	settings.setValue("tts/modelId", modelId);
 	settings.setValue(QString("tts/%1/speakerId").arg(modelId), speakerId);
 	settings.setValue("tts/speed", ttsSpeed);
+	settings.setValue("app/musicVolume", musicVolume);
 	settings.setValue("app/musicEnabled", musicEnabled);
 	settings.sync();
 }
@@ -73,6 +42,8 @@ AppController::AppController(QObject *parent)
 	m_ttsManager = std::make_unique<TTSManager>();
 	m_audioManager = std::make_unique<AudioManager>();
 	m_threadManager = std::make_unique<ThreadManager>();
+	m_modelDownloader = std::make_unique<ModelDownloader>(m_modelsDir.absolutePath());
+	m_foregroundService = std::make_unique<ForegroundPlaybackService>();
 
 	m_sentenceTimer.setInterval(SENTENCE_BREAK_PERIOD);
 	m_sentenceTimer.setSingleShot(true);
@@ -80,6 +51,7 @@ AppController::AppController(QObject *parent)
 	m_imageTimer.setInterval(IMAGE_DISPLAY_PERIOD);
 	m_imageTimer.setSingleShot(true);
 	connect(&m_imageTimer, &QTimer::timeout, this, &AppController::drivePlayback);
+
 	connect(m_ttsManager.get(), &TTSManager::ttsInitializationComplete, this,
 			&AppController::onTtsInitializationComplete);
 	connect(m_ttsManager.get(), &TTSManager::ttsInitializationFailed, this,
@@ -97,6 +69,43 @@ AppController::AppController(QObject *parent)
 			&AppController::onSpeechFinished);
 	connect(m_audioManager.get(), &AudioManager::musicFinished, this,
 			&AppController::onMusicFinished);
+	connect(m_modelDownloader.get(), &ModelDownloader::statusMessage, this,
+			&AppController::statusMessage);
+	connect(m_modelDownloader.get(), &ModelDownloader::errorOccurred, this,
+			&AppController::errorOccurred);
+	connect(m_modelDownloader.get(), &ModelDownloader::downloadProgress, this,
+			[this](int modelId, float percentage) {
+				emit modelDownloadProgress(modelId, percentage);
+				if (modelId == m_appState.modelId)
+					emit downloadProgress(percentage);
+			});
+	connect(m_modelDownloader.get(), &ModelDownloader::downloadFinished, this,
+			[this](int modelId, bool success) {
+				emit modelDownloadFinished(modelId, success);
+
+				if (modelId == m_pendingModelId) {
+					m_pendingModelId = -1;
+					if (success)
+						applyTtsModel(modelId);
+				}
+
+				if (success && modelId == m_appState.modelId) {
+					m_needsDownload = false;
+					emit needsDownloadChanged();
+					QTimer::singleShot(0, this, &AppController::initialize);
+				}
+			});
+	connect(this, &AppController::playbackStateChanged, this, [this]() {
+		if (m_playbackState == PlaybackState::PLAYING)
+			m_foregroundService->start("Reading", QString());
+		else
+			m_foregroundService->stop();
+	});
+
+	connect(this, &AppController::infoMessage, this, [this](const QString &sentence) {
+		if (m_playbackState == PlaybackState::PLAYING)
+			m_foregroundService->updateNotification("Reading", sentence);
+	});
 
 	checkDownloads();
 
@@ -111,127 +120,22 @@ AppController::~AppController()
 
 void AppController::checkDownloads()
 {
-	for (auto &modelName : g_models) {
-		QDir modelPath = m_modelsDir.filePath(modelName);
+	m_needsDownload = !isModelDownloaded(m_appState.modelId);
+}
 
-		if (!modelPath.exists()) {
-			m_needsDownload = true;
-			return;
-		}
-	}
+bool AppController::isModelDownloaded(int modelId) const
+{
+	return m_modelDownloader->isModelDownloaded(modelId);
 }
 
 void AppController::download()
 {
-	QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-	QDir modelsDir(baseDir + "/models");
-
-	if (!modelsDir.exists()) {
-		modelsDir.mkpath(".");
-	}
-
-	m_downloadQueue.clear();
-	for (const QString &modelName : g_models) {
-		if (!QDir(modelsDir.filePath(modelName)).exists()) {
-			m_downloadQueue.append(modelName);
-		}
-	}
-
-	downloadModel(new QNetworkAccessManager(this));
+	downloadModel(m_appState.modelId);
 }
 
-static QString tarExtractFlagFor(const QString &archiveName)
+void AppController::downloadModel(int modelId)
 {
-	static const QVector<QPair<QString, QString>> extToFlag = {
-		{ ".tar.gz", "-xzf" }, { ".tgz", "-xzf" }, { ".tar.bz2", "-xjf" }, { ".tbz2", "-xjf" },
-		{ ".tar.xz", "-xJf" }, { ".txz", "-xJf" }, { ".tar", "-xf" },
-	};
-
-	for (const auto &pair : extToFlag) {
-		if (archiveName.endsWith(pair.first, Qt::CaseInsensitive))
-			return pair.second;
-	}
-	return {};
-}
-
-void AppController::downloadModel(QNetworkAccessManager *networkManager)
-{
-	if (m_downloadQueue.isEmpty()) {
-		delete networkManager;
-		m_needsDownload = false;
-		emit needsDownloadChanged();
-		qDebug() << "All models ready. Initializing...";
-		QTimer::singleShot(0, this, &AppController::initialize);
-		return;
-	}
-
-	QString modelName = m_downloadQueue.first();
-
-	emit statusMessage(false, QString("Downloading %1...").arg(modelName));
-
-	QNetworkRequest request(g_modelSources[modelName]);
-	QNetworkReply *reply = networkManager->get(request);
-
-	connect(reply, &QNetworkReply::downloadProgress, this,
-			[this, modelName](qint64 bytesReceived, qint64 bytesTotal) {
-				if (bytesTotal > 0) {
-					float percentage = ((float)bytesReceived / (float)bytesTotal) * 100.0f;
-					emit downloadProgress(percentage);
-				}
-			});
-
-	connect(reply, &QNetworkReply::finished, this, [this, reply, modelName, networkManager]() {
-		reply->deleteLater();
-		if (reply->error() != QNetworkReply::NoError) {
-			qWarning() << "Download failed:" << reply->errorString();
-			emit errorOccurred(false, QString("%1 download failed").arg(modelName));
-			return;
-		}
-
-		QString modelPath = m_modelsDir.filePath(modelName);
-		QDir().mkpath(modelPath);
-
-		// Derive the real extension from the source URL, not a hardcoded guess
-		QString sourceFileName = QUrl(g_modelSources[modelName]).fileName();
-		QString extractFlag = tarExtractFlagFor(sourceFileName);
-		if (extractFlag.isEmpty()) {
-			qWarning() << "Unrecognized archive format for" << modelName << ":" << sourceFileName;
-			emit errorOccurred(false,
-							   QString("%1 has an unsupported archive format").arg(modelName));
-			QDir(modelPath).removeRecursively();
-			return;
-		}
-		QString ext = sourceFileName.mid(sourceFileName.indexOf('.'));
-		QString archivePath = modelPath + ext;
-
-		QFile file(archivePath);
-		if (!file.open(QIODevice::WriteOnly)) {
-			qWarning() << "Could not write archive for" << modelName;
-			emit errorOccurred(false, QString("%1 could not be saved").arg(modelName));
-			QDir(modelPath).removeRecursively();
-			return;
-		}
-		file.write(reply->readAll());
-		file.close();
-
-		// Extract archive
-		QProcess tar;
-		tar.start("tar", QStringList() << extractFlag << archivePath << "-C" << modelPath
-									   << "--strip-components=1");
-		tar.waitForFinished(-1);
-		QFile::remove(archivePath);
-
-		if (tar.exitCode() != 0) {
-			qWarning() << "Extraction failed: " << tar.exitCode();
-			emit errorOccurred(false, QString("%1 extraction failed").arg(modelName));
-			QDir(modelPath).removeRecursively();
-			return;
-		}
-
-		qDebug() << "Extracted " << modelName << "to path: " << modelPath;
-		m_downloadQueue.removeFirst();
-		downloadModel(networkManager);
-	});
+	m_modelDownloader->downloadModel(modelId);
 }
 
 void AppController::initializeTts()
@@ -239,21 +143,26 @@ void AppController::initializeTts()
 	m_initializingTts = true;
 	emit initializingTtsChanged();
 
-	m_threadManager->submitTask(ThreadType::TTSManager, [this]() {
-		m_ttsManager->initialize(m_modelsDir.filePath(g_models[m_appState.modelId]));
+	const auto &models = ModelDownloader::availableModels();
+	m_threadManager->submitTask(ThreadType::TTSManager, [this, models]() {
+		m_ttsManager->initialize(m_modelsDir.filePath(models[m_appState.modelId]));
 	});
 }
 
 void AppController::initialize()
 {
-	// Load initial user preferences
 	m_appState.loadState();
+
+	m_audioManager->setMusicVolume(m_appState.musicVolume);
+	if (!m_appState.musicEnabled)
+		m_audioManager->toggleMusic();
+
 	emit ttsVoicesChanged();
 	emit ttsModelChanged();
 	emit ttsSpeedChanged();
 	emit ttsSpeakerChanged();
-	if (!m_appState.musicEnabled)
-		toggleMusic();
+	emit musicVolumeChanged();
+	emit isMusicEnabledChanged();
 
 	initializeTts();
 
@@ -268,8 +177,8 @@ void AppController::onTtsInitializationComplete()
 {
 	m_initializingTts = false;
 	emit initializingTtsChanged();
-	emit statusMessage(false,
-					   QString("%1 TTS model initialized").arg(g_models[m_appState.modelId]));
+	emit statusMessage(false, QString("%1 TTS model initialized")
+								  .arg(ModelDownloader::availableModels()[m_appState.modelId]));
 
 	if (m_pdfLoaded) {
 		if (m_playbackState != PlaybackState::PAUSED) {
@@ -278,6 +187,7 @@ void AppController::onTtsInitializationComplete()
 		}
 
 		parsePage(0);
+		driveSynthesis();
 	}
 }
 
@@ -290,12 +200,13 @@ void AppController::onTtsInitializationFailed(const QString &error)
 
 QStringList AppController::ttsModels() const
 {
-	return g_models;
+	return ModelDownloader::availableModels();
 }
 
 QStringList AppController::ttsVoices() const
 {
-	return g_modelVoices[g_models[m_appState.modelId]];
+	const QString currentModel = ModelDownloader::availableModels()[m_appState.modelId];
+	return ModelDownloader::modelVoices()[currentModel];
 }
 
 void AppController::setTtsModel(int modelId)
@@ -303,23 +214,34 @@ void AppController::setTtsModel(int modelId)
 	if (m_appState.modelId == modelId)
 		return;
 
+	if (!isModelDownloaded(modelId)) {
+		m_pendingModelId = modelId;
+		emit statusMessage(
+			false, QString("Downloading %1...").arg(ModelDownloader::availableModels()[modelId]));
+		downloadModel(modelId);
+		return;
+	}
+
+	applyTtsModel(modelId);
+}
+
+void AppController::applyTtsModel(int modelId)
+{
 	m_appState.set(m_appState.modelId, "tts/modelId", modelId);
+	m_appState.get(m_appState.speakerId, QString("tts/%1/speakerId").arg(modelId), 0);
 	emit ttsModelChanged();
 	emit ttsVoicesChanged();
-	m_appState.loadState(); // Load the new speakerId
 	emit ttsSpeakerChanged();
 
 	if (m_pdfLoaded) {
 		m_audioManager->stopSpeech();
+		emit infoClose();
 		m_playbacks.clear();
 		m_lookAheadCount = 0;
 		m_historyCount = 0;
 		m_synthesisFinished = false;
 		m_synthesisPos = { m_appState.page, m_appState.sentenceIdx };
-		if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
-			m_synthesisGenId++;
-			m_synthesizing.clear();
-		}
+		cancelSynthesis();
 	}
 
 	initializeTts();
@@ -337,17 +259,20 @@ void AppController::setTtsSpeed(float speed)
 		return;
 
 	m_audioManager->stopSpeech();
+	emit infoClose();
 	m_playbacks.clear();
 	m_lookAheadCount = 0;
 	m_historyCount = 0;
 	m_synthesisFinished = false;
 	m_synthesisPos = { m_appState.page, m_appState.sentenceIdx };
-	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
-		m_synthesisGenId++;
-		m_synthesizing.clear();
-	} else {
-		driveSynthesis();
-	}
+
+	cancelSynthesis();
+
+	m_isBusy = true;
+	emit isBusyChanged();
+
+	driveSynthesis();
+	drivePlayback();
 }
 
 void AppController::setTtsSpeaker(int speakerId)
@@ -363,22 +288,43 @@ void AppController::setTtsSpeaker(int speakerId)
 		return;
 
 	m_audioManager->stopSpeech();
+	emit infoClose();
 	m_playbacks.clear();
 	m_lookAheadCount = 0;
 	m_historyCount = 0;
 	m_synthesisFinished = false;
 	m_synthesisPos = { m_appState.page, m_appState.sentenceIdx };
-	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
-		m_synthesisGenId++;
-		m_synthesizing.clear();
-	} else {
-		driveSynthesis();
-	}
+
+	cancelSynthesis();
+
+	m_isBusy = true;
+	emit isBusyChanged();
+
+	driveSynthesis();
+	drivePlayback();
+}
+
+void AppController::cancelSynthesis()
+{
+	m_synthesisGenId++;
+	m_synthesizing.clear();
+	m_synthesisTaskInFlight = false;
+}
+
+void AppController::setMusicVolume(float volume)
+{
+	if (qFuzzyCompare(m_appState.musicVolume, volume))
+		return;
+
+	m_audioManager->setMusicVolume(volume);
+	m_appState.set(m_appState.musicVolume, "app/musicVolume", volume);
+	emit musicVolumeChanged();
 }
 
 void AppController::resetState()
 {
 	m_audioManager->stopSpeech();
+	emit infoClose();
 	m_sentenceTimer.stop();
 	m_imageTimer.stop();
 	m_pageDataMap.clear();
@@ -389,13 +335,11 @@ void AppController::resetState()
 	m_historyCount = 0;
 	m_synthesisFinished = false;
 	m_seekDirection = SeekDirection::NONE;
-	if (m_threadManager->queuedTaskCount(ThreadType::PDFParser) > 0)
-		m_parseGenId++;
 
-	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
-		m_synthesisGenId++;
-		m_synthesizing.clear();
-	}
+	m_parseGenId++;
+	m_synthesisGenId++;
+	m_synthesizing.clear();
+	m_synthesisTaskInFlight = false;
 
 	m_imageId = 0;
 	emit imageIdChanged();
@@ -405,15 +349,15 @@ void AppController::openPDF(const QString &uri)
 {
 	resetState();
 
-	// Initialize page, sentenceIdx and playbackIdx only if a pdf was loaded before
 	if (m_pdfLoaded) {
 		m_appState.set(m_appState.page, "app/page", 0);
 		m_appState.set(m_appState.sentenceIdx, "app/sentenceIdx", 0);
 		m_appState.set(m_appState.playbackIdx, "app/playbackIdx", 0);
 	}
 	m_appState.set(m_appState.pdfPath, "app/pdfPath", uri);
-	m_playbackState = PlaybackState::BUSY;
-	emit playbackStateChanged();
+
+	m_isBusy = true;
+	emit isBusyChanged();
 
 	m_pdfLoaded = false;
 	m_threadManager->submitTask(ThreadType::PDFParser, [this, uri] { m_pdfParser->loadPdf(uri); });
@@ -479,12 +423,14 @@ void AppController::onPdfLoaded(int totalPages, const QVector<uint16_t> &sentenc
 
 	emit statusMessage(false, QString("PDF Loaded : %2").arg(m_totalPages));
 
-	m_playbackState = PlaybackState::PLAYING;
-	emit playbackStateChanged();
+	if (m_playbackState != PlaybackState::PAUSED) {
+		m_playbackState = PlaybackState::PLAYING;
+		emit playbackStateChanged();
+	}
 	m_pdfLoaded = true;
 
 	if (m_ttsManager->isInitialized())
-		parsePage(0); // Parse Page for cover image
+		parsePage(0);
 }
 
 void AppController::onPdfLoadFailed(const QString &error)
@@ -493,6 +439,12 @@ void AppController::onPdfLoadFailed(const QString &error)
 	m_pdfLoaded = false;
 	m_totalPages = 0;
 	emit totalPagesChanged();
+
+	if (m_playbackState != PlaybackState::PAUSED) {
+		m_playbackState = PlaybackState::PLAYING;
+		emit playbackStateChanged();
+	}
+
 	emit errorOccurred(true, error);
 }
 
@@ -525,10 +477,8 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 									const QList<PlaybackSegment> &segments, uint8_t genId)
 {
 	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY) {
-			m_playbackState = PlaybackState::PLAYING;
-			emit playbackStateChanged();
-		}
+		m_isBusy = false;
+		emit isBusyChanged();
 
 		driveSynthesis();
 		drivePlayback();
@@ -551,10 +501,8 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 		setPlaybackIdx();
 	}
 
-	if (m_playbackState == PlaybackState::BUSY) {
-		m_playbackState = PlaybackState::PLAYING;
-		emit playbackStateChanged();
-	}
+	m_isBusy = false;
+	emit isBusyChanged();
 
 	driveSynthesis();
 	drivePlayback();
@@ -563,10 +511,8 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 void AppController::onPageExtractionFailed(int pageNumber, const QString &error, uint8_t genId)
 {
 	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY) {
-			m_playbackState = PlaybackState::PLAYING;
-			emit playbackStateChanged();
-		}
+		m_isBusy = false;
+		emit isBusyChanged();
 
 		driveSynthesis();
 		drivePlayback();
@@ -575,10 +521,8 @@ void AppController::onPageExtractionFailed(int pageNumber, const QString &error,
 
 	m_pageDataMap[pageNumber] = { .state = LoadState::FAILED, .errorMessage = error };
 
-	if (m_playbackState == PlaybackState::BUSY) {
-		m_playbackState = PlaybackState::PLAYING;
-		emit playbackStateChanged();
-	}
+	m_isBusy = false;
+	emit isBusyChanged();
 
 	if (m_seekDirection != SeekDirection::NONE && pageNumber == m_appState.page) {
 		seekSentence(m_seekDirection);
@@ -592,8 +536,8 @@ void AppController::onPageExtractionFailed(int pageNumber, const QString &error,
 
 void AppController::driveSynthesis()
 {
-	if (!m_pdfLoaded || m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0 ||
-		m_lookAheadCount >= m_maxLookAheadCount || m_synthesisFinished) {
+	if (!m_pdfLoaded || m_synthesisTaskInFlight || m_lookAheadCount >= m_maxLookAheadCount ||
+		m_synthesisFinished) {
 		return;
 	}
 
@@ -632,6 +576,7 @@ void AppController::driveSynthesis()
 									 m_appState.ttsSpeed, genId);
 	});
 	m_synthesizing.enqueue(m_synthesisPos);
+	m_synthesisTaskInFlight = true;
 
 	if (!nextPosition(m_synthesisPos))
 		m_synthesisFinished = true;
@@ -641,10 +586,8 @@ void AppController::onSynthesisComplete(uint16_t pageNumber, uint16_t sentenceId
 										const QByteArray &audioData, int sampleRate, uint8_t genId)
 {
 	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY) {
-			m_playbackState = PlaybackState::PLAYING;
-			emit playbackStateChanged();
-		}
+		m_isBusy = false;
+		emit isBusyChanged();
 
 		driveSynthesis();
 		drivePlayback();
@@ -652,16 +595,15 @@ void AppController::onSynthesisComplete(uint16_t pageNumber, uint16_t sentenceId
 	}
 
 	m_synthesizing.dequeue();
+	m_synthesisTaskInFlight = false;
 	m_playbacks.enqueue(PlaybackData{ .state = LoadState::LOADED,
 									  .pos = { pageNumber, sentenceIdx },
 									  .audio = audioData,
 									  .sampleRate = sampleRate });
 	m_lookAheadCount++;
 
-	if (m_playbackState == PlaybackState::BUSY) {
-		m_playbackState = PlaybackState::PLAYING;
-		emit playbackStateChanged();
-	}
+	m_isBusy = false;
+	emit isBusyChanged();
 
 	driveSynthesis();
 	drivePlayback();
@@ -671,10 +613,8 @@ void AppController::onSynthesisFailed(uint16_t pageNumber, uint16_t sentenceIdx,
 									  const QString &error, uint8_t genId)
 {
 	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
-		if (m_playbackState == PlaybackState::BUSY) {
-			m_playbackState = PlaybackState::PLAYING;
-			emit playbackStateChanged();
-		}
+		m_isBusy = false;
+		emit isBusyChanged();
 
 		driveSynthesis();
 		drivePlayback();
@@ -682,14 +622,13 @@ void AppController::onSynthesisFailed(uint16_t pageNumber, uint16_t sentenceIdx,
 	}
 
 	m_synthesizing.dequeue();
+	m_synthesisTaskInFlight = false;
 	m_playbacks.enqueue(PlaybackData{
 		.state = LoadState::FAILED, .pos = { pageNumber, sentenceIdx }, .errorMessage = error });
 	m_lookAheadCount++;
 
-	if (m_playbackState == PlaybackState::BUSY) {
-		m_playbackState = PlaybackState::PLAYING;
-		emit playbackStateChanged();
-	}
+	m_isBusy = false;
+	emit isBusyChanged();
 
 	driveSynthesis();
 	drivePlayback();
@@ -699,7 +638,10 @@ void AppController::onSpeechFinished(uint16_t pageNumber, uint16_t sentenceIdx)
 {
 	(void)pageNumber;
 	(void)sentenceIdx;
-	m_sentenceTimer.start();
+	if (m_playbackState == PlaybackState::PLAYING) {
+		m_sentenceTimer.start();
+		emit infoClose();
+	}
 	driveSynthesis();
 }
 
@@ -742,8 +684,8 @@ void AppController::drivePlayback()
 	auto &pageData = m_pageDataMap[m_appState.page];
 	switch (pageData.state) {
 	case LoadState::UNLOADED:
-		m_playbackState = PlaybackState::BUSY;
-		emit playbackStateChanged();
+		m_isBusy = true;
+		emit isBusyChanged();
 		parseTillPage(m_appState.page);
 		return;
 
@@ -756,8 +698,8 @@ void AppController::drivePlayback()
 		return;
 
 	case LoadState::LOADING:
-		m_playbackState = PlaybackState::BUSY;
-		emit playbackStateChanged();
+		m_isBusy = true;
+		emit isBusyChanged();
 		return;
 
 	default:
@@ -776,8 +718,8 @@ void AppController::drivePlayback()
 
 	if (playbackSegment.hasSentences()) {
 		if (m_lookAheadCount == 0) {
-			m_playbackState = PlaybackState::BUSY;
-			emit playbackStateChanged();
+			m_isBusy = true;
+			emit isBusyChanged();
 			return;
 		}
 
@@ -789,9 +731,14 @@ void AppController::drivePlayback()
 			drivePlayback();
 			return;
 		} else if (playback.state == LoadState::LOADED) {
+			if (m_playbackState != PlaybackState::PLAYING) {
+				m_playbackState = PlaybackState::PLAYING;
+				emit playbackStateChanged();
+			}
 			m_audioManager->playSpeech(playback.audio, playback.sampleRate, playback.pos.pageNo,
 									   playback.pos.sentenceIdx);
 			m_appState.set(m_appState.sentenceIdx, "app/sentenceIdx", playback.pos.sentenceIdx);
+			emit infoMessage(pageData.sentences[playback.pos.sentenceIdx]);
 			m_historyCount++;
 			m_lookAheadCount--;
 			evictHistory();
@@ -847,11 +794,10 @@ void AppController::play()
 
 void AppController::restart()
 {
-	// PDF is always loaded here
 	if (!m_pdfLoaded)
 		return;
 
-	m_playbackState = PlaybackState::BUSY;
+	m_playbackState = PlaybackState::PLAYING;
 	emit playbackStateChanged();
 	resetState();
 	m_parsePage = 0;
@@ -872,13 +818,8 @@ void AppController::changeSynthesisPos(Position pos)
 	if (!isPositionValid(m_synthesisPos))
 		nextPosition(m_synthesisPos);
 
-	if (m_threadManager->queuedTaskCount(ThreadType::PDFParser) > 0)
-		m_parseGenId++;
-
-	if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0) {
-		m_synthesisGenId++;
-		m_synthesizing.clear();
-	}
+	m_parseGenId++;
+	cancelSynthesis();
 
 	driveSynthesis();
 }
@@ -902,6 +843,7 @@ void AppController::seekSentence(SeekDirection dir)
 		return;
 
 	m_audioManager->stopSpeech();
+	emit infoClose();
 	m_sentenceTimer.stop();
 	m_imageTimer.stop();
 
@@ -911,8 +853,7 @@ void AppController::seekSentence(SeekDirection dir)
 		updateCurrentPage(m_totalPages);
 		m_appState.set(m_appState.sentenceIdx, "app/sentenceIdx",
 					   m_sentenceCounts[m_totalPages - 1] - 1);
-		m_appState.set(m_appState.playbackIdx, "app/playbackIdx",
-					   1000); // Large number to indicate End
+		m_appState.set(m_appState.playbackIdx, "app/playbackIdx", 1000);
 		return;
 	}
 
@@ -921,8 +862,8 @@ void AppController::seekSentence(SeekDirection dir)
 
 	if (m_pageDataMap[currentPos.pageNo].state != LoadState::LOADED) {
 		m_seekDirection = dir;
-		m_playbackState = PlaybackState::BUSY;
-		emit playbackStateChanged();
+		m_isBusy = true;
+		emit isBusyChanged();
 		m_parsePage = currentPos.pageNo;
 		updateCurrentPage(currentPos.pageNo);
 		m_appState.set(m_appState.sentenceIdx, "app/sentenceIdx", m_synthesisPos.sentenceIdx);
@@ -938,7 +879,7 @@ void AppController::seekSentence(SeekDirection dir)
 	if (it != m_playbacks.cend()) {
 		m_historyCount = std::distance(m_playbacks.cbegin(), it);
 		m_lookAheadCount = m_playbacks.size() - m_historyCount;
-	} else if (m_threadManager->queuedTaskCount(ThreadType::TTSManager) > 0 &&
+	} else if (m_synthesisTaskInFlight && !m_synthesizing.isEmpty() &&
 			   m_synthesizing.front() == currentPos) {
 		m_playbacks.clear();
 		m_historyCount = 0;
@@ -959,6 +900,7 @@ void AppController::goToPage(uint16_t page)
 		return;
 
 	m_audioManager->stopSpeech();
+	emit infoClose();
 
 	m_parsePage = page;
 	updateCurrentPage(page);
@@ -983,6 +925,6 @@ void AppController::onMusicFinished()
 void AppController::toggleMusic()
 {
 	m_audioManager->toggleMusic();
-	emit isMusicEnabledChanged();
 	m_appState.set(m_appState.musicEnabled, "app/musicEnabled", m_audioManager->isMusicEnabled());
+	emit isMusicEnabledChanged();
 }

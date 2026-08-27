@@ -115,8 +115,7 @@ Item {
     BusyIndicator {
         anchors.centerIn: parent
         // Only run and show if NO downloads are required
-        running: !appController.needsDownload && (appController.playbackState === AppController.BUSY ||
-                                                 appController.initializingTts)
+        running: !appController.needsDownload && (appController.isBusy || appController.initializingTts)
         visible: running
         width: parent.width * Style.indicatorFactor
         height: width
@@ -130,9 +129,7 @@ Item {
         buttonRadius: 1.0
         
         // Hide if downloads are needed, or if busy, or if controls are toggled off
-        visible: !appController.needsDownload 
-                 && root.controlsVisible 
-                 && appController.playbackState !== AppController.BUSY
+        visible: !appController.needsDownload && !appController.isBusy && root.controlsVisible 
 
         iconSource: {
             switch (appController.playbackState) {
