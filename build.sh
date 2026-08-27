@@ -35,9 +35,6 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # ---- Monitor: clear old logs, wait for the app, stream its logs ----
-# Standalone mode: `./build.sh MONITOR` just watches logs, skipping build
-# entirely. Re-attaches automatically if the app is closed and relaunched,
-# since the PID changes every launch.
 monitor_logs() {
     echo -e "${YELLOW}Clearing old logcat buffer...${NC}"
     adb logcat -c
@@ -113,12 +110,30 @@ if [ "$IS_ANDROID" = true ]; then
     if [ -z "$QT_ANDROID_KEYSTORE_KEY_PASS" ];   then export QT_ANDROID_KEYSTORE_KEY_PASS="android"; fi
 fi
 
-# ---- Android env vars (must always be set — ninja can trigger an
-# ---- automatic reconfigure mid-build whenever CMakeLists.txt changes,
-# ---- even on runs that skip our own explicit cmake configure step below.
-# ---- If these aren't exported unconditionally, that auto-reconfigure
-# ---- fails with "ANDROID_NDK environment variable must be set.") ----
+# ---- Android & Java env vars ----
 if [ "$IS_ANDROID" = true ]; then
+    # ---- Java 17 Home detection ----
+    if [ -z "$JAVA_HOME" ]; then
+        for jpath in \
+            "/usr/lib/jvm/java-17-openjdk-amd64" \
+            "/usr/lib/jvm/temurin-17-jdk-amd64" \
+            "/usr/lib/jvm/java-17-openjdk" \
+            "/usr/lib/jvm/default-java"; do
+            if [ -d "$jpath" ]; then
+                export JAVA_HOME="$jpath"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
+        echo -e "${RED}OpenJDK 17 not found! Set JAVA_HOME or install openjdk-17-jdk.${NC}"
+        exit 1
+    fi
+
+    export PATH="$JAVA_HOME/bin:$PATH"
+    echo -e "${GREEN}Using JAVA_HOME: $JAVA_HOME${NC}"
+
     if [ -z "$QT_HOST_PATH" ]; then export QT_HOST_PATH="$HOME/Qt/6.11.1/gcc_64"; fi
     if [ -z "$ANDROID_NDK" ];   then export ANDROID_NDK="/opt/android-sdk/ndk/28.2.13676358"; fi
     if [ -z "$ANDROID_SDK_ROOT" ]; then export ANDROID_SDK_ROOT="/opt/android-sdk"; fi
@@ -139,12 +154,15 @@ if [ ! -f "build.ninja" ]; then
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_HOST_PATH="$QT_HOST_PATH" \
             -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DJAVA_HOME="$JAVA_HOME" \
             -DQT_ANDROID_SIGN_APK=ON \
+            -DCMAKE_PREFIX_PATH="$QT_BASE/$ABI" \
             ../.. || exit 1
     else
         cmake -GNinja \
             -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_PREFIX_PATH="$QT_BASE/$ABI" \
             ../.. || exit 1
     fi
 else

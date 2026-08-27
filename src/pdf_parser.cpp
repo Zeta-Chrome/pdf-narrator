@@ -6,6 +6,7 @@
 
 #define TOP_MARGIN (float)0.08
 #define BOTTOM_MARGIN (float)0.08
+#define MIN_IMAGE_SIZE (float)0.08
 
 struct OffsetPiece {
 	QString text;
@@ -248,45 +249,62 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	if (textBlockLines.isEmpty())
 		return sentences;
 
-	constexpr int MIN_WORDS = 25;
-	constexpr int MAX_WORDS = 40;
+	constexpr int MIN_WORDS = 15;
+	constexpr int MAX_WORDS = 30;
 
-	static const QRegularExpression cleanupRe(R"((?:\s*\.){3,}\s*|\s+|\x{FFFD}+)");
+	static const QRegularExpression cleanupRe(R"(\s+|[\x{FFFD}"\x{201C}\x{201D}]+)");
+	static const QRegularExpression punctConflictRe(R"(([?!;])\s*[.]+|(?:[.]\s*)+([?!;]))");
+	static const QRegularExpression multiPeriodRe(R"((?:\.\s*){2,})");
+	static const QRegularExpression spaceBeforePunctRe(R"(\s+([.,!?;:]))");
+
 	static const QRegularExpression sentenceSplitRe(
-		R"((?<!\b[A-Z][a-z]{0,3}\.)(?<!\bi\.e\.)(?<!\be\.g\.)(?<!\betc\.)(?<!\b\d{1,3}\.)(?<=[.?!;])\s+|\x{2028})");
-
-	// Same abbreviation shapes as the lookbehinds in sentenceSplitRe above,
-	// minus the \d{1,3}\. one — numbered entries must keep their period.
-	// Kept as a single source of truth: if you ever add/remove a pattern
-	// here, mirror it in sentenceSplitRe's lookbehinds too, and vice versa.
+		R"((?<!\b[A-Z][a-z]{0,3}\.)(?<!\bi\.e\.)(?<!\be\.g\.)(?<!\betc\.)(?<!\b\d{1,3}\.)(?<=[.?!;\-\x{2013}\x{2014}])\s+|\x{2028})");
 	static const QRegularExpression abbrevDotRe(R"(\b[A-Z][a-z]{0,3}\.|\bi\.e\.|\be\.g\.|\betc\.)");
 
-	// Strips the "." out of any abbreviation match, character-preserving
-	auto stripAbbreviationDots = [](const QString &text) {
+	// Zero-allocation, character-preserving dot stripper
+	auto stripAbbreviationDots = [](const QString &text) -> QString {
+		QRegularExpressionMatchIterator it = abbrevDotRe.globalMatch(text);
+		if (!it.hasNext())
+			return text; // Fast-path: return unchanged copy/ref
+
 		QString result;
 		result.reserve(text.size());
 		int lastEnd = 0;
-		QRegularExpressionMatchIterator it = abbrevDotRe.globalMatch(text);
 		while (it.hasNext()) {
-			QRegularExpressionMatch m = it.next();
-			result += text.mid(lastEnd, m.capturedStart() - lastEnd);
-			QString matched = m.captured(0);
-			matched.remove(u'.');
-			result += matched;
+			const QRegularExpressionMatch m = it.next();
+			result.append(QStringView(text).mid(lastEnd, m.capturedStart() - lastEnd));
+
+			// Append matched token without '.'
+			QStringView matched = m.capturedView(0);
+			for (const QChar c : matched) {
+				if (c != u'.')
+					result.append(c);
+			}
 			lastEnd = m.capturedEnd();
 		}
-		result += text.mid(lastEnd);
+		result.append(QStringView(text).mid(lastEnd));
 		return result;
 	};
 
-	auto countWords = [](const QString &s) {
-		return s.isEmpty() ? 0 : s.split(u' ', Qt::SkipEmptyParts).size();
+	// Zero-allocation word counter (O(N) character scan)
+	auto countWords = [](QStringView s) -> size_t {
+		size_t count = 0;
+		bool inWord = false;
+		for (const QChar c : s) {
+			if (c.isSpace()) {
+				inWord = false;
+			} else if (!inWord) {
+				inWord = true;
+				++count;
+			}
+		}
+		return count;
 	};
 
-	auto endsWithSentenceTerminator = [](const QString &s) {
+	auto endsWithSentenceTerminator = [](QStringView s) -> bool {
 		if (s.isEmpty())
 			return false;
-		QChar c = s.back();
+		const QChar c = s.back();
 		return c == u'.' || c == u'!' || c == u'?' || c == u';';
 	};
 
@@ -297,10 +315,6 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		int blockIdx;
 	};
 
-	// for each block, join its lines into one continuous
-	// string (respecting the hyphenation rule at line breaks), then
-	// split that string into sentence-sized pieces. Each piece gets
-	// a bounding box computed by merging every original line it spans.
 	QList<RawSentence> rawList;
 
 	for (int blockIdx = 0; blockIdx < textBlockLines.size(); ++blockIdx) {
@@ -309,8 +323,6 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		if (lineCount == 0)
 			continue;
 
-		// build the joined string, remembering each line's
-		// character range within it, for bbox lookup later ---
 		struct LineSpan {
 			int start;
 			int end;
@@ -319,75 +331,87 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		};
 
 		QString joined;
+		// Estimate average line length to reduce heap growth cycles
+		joined.reserve(lineCount * 60);
+
 		QList<LineSpan> lineSpans;
+		lineSpans.reserve(lineCount);
+
+		const auto &yTopList = block.yTopList;
+		const auto &yBottomList = block.yBottomList;
 
 		for (qsizetype i = 0; i < lineCount; ++i) {
 			QString line = block.strList[i];
+
+			// In-place regex cleanups
 			line.replace(cleanupRe, QStringLiteral(" "));
+			line.replace(punctConflictRe, QStringLiteral("\\1\\2"));
+			line.replace(multiPeriodRe, QStringLiteral("."));
+			line.replace(spaceBeforePunctRe, QStringLiteral("\\1"));
+
 			line = line.trimmed();
-			line = stripAbbreviationDots(line); // strips "." from abbreviations only
+			line = stripAbbreviationDots(line);
 			if (line.isEmpty())
 				continue;
 
-			bool isHyphenated = line.endsWith(u'-');
+			const bool isHyphenated = line.endsWith(u'-');
 			if (isHyphenated)
-				line.chop(1); // word continues on next line, no space needed
+				line.chop(1);
 
-			int start = joined.length();
-			joined += line;
-			int end = joined.length();
+			const int start = joined.length();
+			joined.append(line);
+			const int end = joined.length();
 
-			lineSpans.append(
-				{ start, end, block.yTopList.value(i, 0.0f), block.yBottomList.value(i, 0.0f) });
+			const float yTop = (i < yTopList.size()) ? yTopList[i] : 0.0f;
+			const float yBottom = (i < yBottomList.size()) ? yBottomList[i] : 0.0f;
+			lineSpans.append({ start, end, yTop, yBottom });
 
-			bool isLastLine = (i == lineCount - 1);
-			if (!isLastLine)
-				joined += isHyphenated ? QString() : QStringLiteral(" ");
+			const bool isLastLine = (i == lineCount - 1);
+			if (!isLastLine && !isHyphenated)
+				joined.append(u' ');
 		}
 
 		if (joined.isEmpty())
 			continue;
 
-		// split the joined block text into sentence pieces ---
-		QList<OffsetPiece> pieces = splitWithOffsets(joined, sentenceSplitRe);
+		const QList<OffsetPiece> pieces = splitWithOffsets(joined, sentenceSplitRe);
 
 		for (const OffsetPiece &piece : pieces) {
-			QString text = piece.text.trimmed();
-			if (text.isEmpty())
+			QStringView textSpan = QStringView(piece.text).trimmed();
+			if (textSpan.isEmpty())
 				continue;
 
-			// merge the bbox of every line this piece overlaps ---
 			float yTop = 0.0f;
 			float yBottom = 0.0f;
 			bool foundAny = false;
 
 			for (const LineSpan &span : lineSpans) {
-				bool overlaps = (span.start < piece.end) && (span.end > piece.start);
-				if (!overlaps)
-					continue;
-
-				if (!foundAny) {
-					yTop = span.yTop;
-					yBottom = span.yBottom;
-					foundAny = true;
-				} else {
-					yTop = std::min(yTop, span.yTop);
-					yBottom = std::max(yBottom, span.yBottom);
+				if (span.start < piece.end && span.end > piece.start) {
+					if (!foundAny) {
+						yTop = span.yTop;
+						yBottom = span.yBottom;
+						foundAny = true;
+					} else {
+						yTop = std::min(yTop, span.yTop);
+						yBottom = std::max(yBottom, span.yBottom);
+					}
 				}
 			}
 
-			rawList.append({ text, yTop, yBottom, blockIdx });
+			rawList.append({ textSpan.toString(), yTop, yBottom, blockIdx });
 		}
 	}
 
 	if (rawList.isEmpty())
 		return sentences;
 
-	// merge raw sentence pieces into 25-40 word groups.
-	// Prefer breaking at a block boundary, but only once the current
-	// group has already reached MIN_WORDS — otherwise keep merging
-	// across the boundary so we don't emit tiny fragments.
+	// Pre-reserve sentence list buffers
+	sentences.strList.reserve(rawList.size());
+	sentences.yTopList.reserve(rawList.size());
+	sentences.yBottomList.reserve(rawList.size());
+
 	QString currentText;
+	currentText.reserve(256);
 	float currentYTop = 0.0f;
 	float currentYBottom = 0.0f;
 	size_t currentWordCount = 0;
@@ -401,9 +425,9 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		QString finalText = currentText.trimmed();
 
 		if (!finalText.isEmpty() && !endsWithSentenceTerminator(finalText))
-			finalText += u'.';
+			finalText.append(u'.');
 
-		sentences.strList.append(finalText);
+		sentences.strList.append(std::move(finalText));
 		sentences.yTopList.append(currentYTop);
 		sentences.yBottomList.append(currentYBottom);
 
@@ -413,7 +437,7 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	};
 
 	for (const RawSentence &raw : rawList) {
-		size_t words = countWords(raw.text);
+		const size_t words = countWords(raw.text);
 
 		if (!hasCurrent) {
 			currentText = raw.text;
@@ -425,10 +449,10 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 			continue;
 		}
 
-		bool enteringNewBlock = (raw.blockIdx != currentBlockIdx);
-		bool preferBreakHere = enteringNewBlock && currentWordCount >= MIN_WORDS;
-		bool wouldExceedMax = (currentWordCount >= MIN_WORDS) &&
-							  (currentWordCount + words > MAX_WORDS);
+		const bool enteringNewBlock = (raw.blockIdx != currentBlockIdx);
+		const bool preferBreakHere = enteringNewBlock && currentWordCount >= MIN_WORDS;
+		const bool wouldExceedMax = (currentWordCount >= MIN_WORDS) &&
+									(currentWordCount + words > MAX_WORDS);
 
 		if (preferBreakHere || wouldExceedMax) {
 			flushCurrentGroup();
@@ -439,7 +463,8 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 			currentBlockIdx = raw.blockIdx;
 			hasCurrent = true;
 		} else {
-			currentText += u' ' + raw.text;
+			currentText.append(u' ');
+			currentText.append(raw.text);
 			currentYTop = std::min(currentYTop, raw.yTop);
 			currentYBottom = std::max(currentYBottom, raw.yBottom);
 			currentWordCount += words;
@@ -466,12 +491,14 @@ void PDFParser::extractPageContents(int pageNumber, uint8_t genId)
 		float pageHeight = pageBounds.y1 - pageBounds.y0;
 		float topMargin = pageBounds.y0 + pageHeight * TOP_MARGIN;
 		float bottomMargin = pageBounds.y1 - pageHeight * BOTTOM_MARGIN;
+		float minImageSize = pageHeight * MIN_IMAGE_SIZE;
 
 		fz_stext_options opts = { 0 };
 		opts.flags |= FZ_STEXT_PRESERVE_IMAGES;
 		textPage = fz_new_stext_page_from_page(m_context, page, &opts);
 
-		extractBlockContents(textPage->first_block, sentences, images, topMargin, bottomMargin);
+		extractBlockContents(textPage->first_block, sentences, images, topMargin, bottomMargin,
+							 minImageSize);
 	}
 	fz_always(m_context)
 	{
@@ -498,7 +525,7 @@ void PDFParser::extractPageContents(int pageNumber, uint8_t genId)
 }
 
 void PDFParser::extractBlockContents(fz_stext_block *block, TextList &sentences, ImageList &images,
-									 float topMargin, float bottomMargin)
+									 float topMargin, float bottomMargin, float minImageSize)
 {
 	QList<TextList> pageLines;
 	ImageList blockImage;
@@ -510,12 +537,19 @@ void PDFParser::extractBlockContents(fz_stext_block *block, TextList &sentences,
 				continue;
 			pageLines.append(getBlockTextLines(b));
 			break;
-		case FZ_STEXT_BLOCK_IMAGE:
+		case FZ_STEXT_BLOCK_IMAGE: {
+			float imgWidth = b->bbox.x1 - b->bbox.x0;
+			float imgHeight = b->bbox.y1 - b->bbox.y0;
+
+			if (imgWidth <= minImageSize || imgHeight <= minImageSize)
+				continue;
+
 			blockImage = getBlockImage(b);
 			images.imageList += blockImage.imageList;
 			images.yTopList += blockImage.yTopList;
 			images.yBottomList += blockImage.yBottomList;
 			break;
+		}
 		default:
 			continue;
 		}

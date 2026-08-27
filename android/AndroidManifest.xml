@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name="org.qtproject.qt.android.bindings.QtApplication"
@@ -17,6 +21,12 @@
         android:enableOnBackInvokedCallback="false"
         android:allowBackup="true"
         android:fullBackupOnly="false">
+
+        <service
+            android:name="org.qtproject.example.pdfnarrator.TtsForegroundService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
         <activity
             android:name="org.qtproject.qt.android.bindings.QtActivity"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
@@ -34,6 +44,9 @@
             <meta-data
                 android:name="android.app.arguments"
                 android:value="" />
+            <meta-data
+                android:name="android.app.background_running"
+                android:value="true" />
         </activity>
     </application>
 </manifest>

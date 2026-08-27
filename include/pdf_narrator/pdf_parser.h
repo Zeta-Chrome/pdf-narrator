@@ -64,7 +64,7 @@ private:
 	TextList getBlockTextLines(fz_stext_block *block);
 	TextList getPageSentences(QList<TextList> &textBlockLines);
 	void extractBlockContents(fz_stext_block *block, TextList &sentences, ImageList &images,
-							  float topMargin, float bottomMargin);
+							  float topMargin, float bottomMargin, float minImageSize);
 	ImageList getBlockImage(fz_stext_block *block);
 	void getPlaybackSegments(TextList &sentences, ImageList &images,
 							 QList<PlaybackSegment> &segments);
