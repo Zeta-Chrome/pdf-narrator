@@ -8,7 +8,7 @@
 
 int main(int argc, char *argv[])
 {
-#ifdef Q_OS_LINUX
+#if defined(Q_OS_LINUX)
 	// Force FFmpeg to use PulseAudio backend on Linux
 	qputenv("QT_AUDIO_BACKEND", "pulseaudio");
 #endif

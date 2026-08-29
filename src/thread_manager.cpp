@@ -1,4 +1,6 @@
 #include "thread_manager.h"
+#include "app_controller.h"
+#include <qdebug.h>
 
 ThreadManager::ThreadManager(QObject *parent)
 	: QObject(parent)
@@ -9,11 +11,7 @@ ThreadManager::ThreadManager(QObject *parent)
 
 ThreadManager::~ThreadManager()
 {
-	for (auto ctx : m_threads) {
-		ctx->thread.quit();
-		ctx->thread.wait();
-		delete ctx;
-	}
+	shutdown();
 }
 
 void ThreadManager::createThread(ThreadType type, const QString &name)
@@ -24,15 +22,6 @@ void ThreadManager::createThread(ThreadType type, const QString &name)
 	ctx->thread.start();
 	m_threads.insert(type, ctx);
 };
-
-int ThreadManager::queuedTaskCount(ThreadType type) const
-{
-	auto ctx = m_threads.value(type, nullptr);
-	if (!ctx)
-		return 0;
-
-	return ctx->pendingTasks.load();
-}
 
 void ThreadManager::submitTask(ThreadType type, std::function<void()> task)
 {
@@ -48,4 +37,14 @@ void ThreadManager::submitTask(ThreadType type, std::function<void()> task)
 			ctx->pendingTasks--;
 		},
 		Qt::QueuedConnection);
+}
+
+void ThreadManager::shutdown()
+{
+	for (auto ctx : m_threads) {
+		ctx->worker.disconnect();
+		ctx->thread.quit();
+		ctx->thread.wait();
+		delete ctx;
+	}
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <QDir>
 #include <QUrl>
+#include <utility>
 
 #define TOP_MARGIN (float)0.08
 #define BOTTOM_MARGIN (float)0.08
@@ -14,11 +15,12 @@ struct OffsetPiece {
 	int end;
 };
 
-PDFParser::PDFParser(QObject *parent)
+PDFParser::PDFParser(std::shared_ptr<GenerationID> genId, QObject *parent)
 	: QObject(parent)
 	, m_context(nullptr)
 	, m_document(nullptr)
 	, m_pageCount(0)
+	, m_genId(std::move(genId))
 {
 	m_context = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
 
@@ -243,6 +245,164 @@ QList<OffsetPiece> splitWithOffsets(const QString &text, const QRegularExpressio
 	return pieces;
 }
 
+namespace
+{
+
+// Priority used when a run contains mixed punctuation, e.g. "?!." or ".?"
+// Higher wins. Mirrors the old punctConflictRe intent: strong terminators
+// (?! ;) beat weak ones (. , : -).
+int punctPriority(QChar c)
+{
+	switch (c.unicode()) {
+	case u'?':
+	case u'!':
+		return 3;
+	case u';':
+		return 2;
+	case u':':
+		return 1;
+	case u'.':
+	case u',':
+		return 0;
+	case u'-':
+		return -1;
+	default:
+		return -100;
+	}
+}
+
+bool isCollapsible(QChar c)
+{
+	switch (c.unicode()) {
+	case u'.':
+	case u',':
+	case u'!':
+	case u'?':
+	case u';':
+	case u':':
+	case u'-':
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Straight/curly double quotes + the replacement char. NOT apostrophes -
+// those matter for contractions ("don't") and must survive.
+bool isJunk(QChar c)
+{
+	return c.unicode() == 0xFFFD || c == u'"' || c.unicode() == 0x201C || c.unicode() == 0x201D;
+}
+
+bool isKnownAbbrevToken(QStringView tokenLower)
+{
+	static const QSet<QString> kAbbrevs = {
+		QStringLiteral("mr"), QStringLiteral("mrs"),  QStringLiteral("ms"), QStringLiteral("dr"),
+		QStringLiteral("st"), QStringLiteral("prof"), QStringLiteral("sr"), QStringLiteral("jr"),
+		QStringLiteral("vs"), QStringLiteral("ie"),	  QStringLiteral("eg"), QStringLiteral("etc")
+	};
+	return kAbbrevs.contains(tokenLower.toString());
+}
+
+// Shape of the old regex [A-Z][a-z]{0,3} - e.g. "Capt", "Gen", "Col".
+bool looksLikeCapitalizedAbbrev(QStringView token)
+{
+	if (token.isEmpty() || token.size() > 4 || !token[0].isUpper())
+		return false;
+	for (int i = 1; i < token.size(); ++i)
+		if (!token[i].isLower())
+			return false;
+	return true;
+}
+
+bool isAllDigits(QStringView token)
+{
+	if (token.isEmpty() || token.size() > 3)
+		return false;
+	for (const QChar c : token)
+		if (!c.isDigit())
+			return false;
+	return true;
+}
+
+QString cleanLine(QStringView in)
+{
+	QString out;
+	out.reserve(in.size());
+
+	bool pendingSpace = false;
+	bool inPunctRun = false;
+	int bestPriority = -100;
+	QChar bestPunct;
+	int tokenStart = -1; // index into `out` where the current word/number token began
+
+	const qsizetype n = in.size();
+	for (qsizetype i = 0; i < n; ++i) {
+		const QChar c = in[i];
+
+		if (c.isSpace()) {
+			if (!inPunctRun)
+				pendingSpace = !out.isEmpty();
+			continue;
+		}
+
+		if (isJunk(c)) {
+			continue;
+		}
+
+		if (c == u'.') {
+			const QStringView rest = in.mid(i);
+			const bool isIeOrEg = (tokenStart >= 0 && out.size() - tokenStart == 1) &&
+								  ((out.back().toLower() == u'i' &&
+									rest.startsWith(QStringLiteral("e."), Qt::CaseInsensitive)) ||
+								   (out.back().toLower() == u'e' &&
+									rest.startsWith(QStringLiteral("g."), Qt::CaseInsensitive)));
+
+			const QStringView token = tokenStart >= 0 ? QStringView(out).mid(tokenStart) :
+														QStringView();
+			const bool isAbbrev = isIeOrEg || isKnownAbbrevToken(token.toString().toLower()) ||
+								  looksLikeCapitalizedAbbrev(token) || isAllDigits(token);
+
+			if (isAbbrev) {
+				continue;
+			}
+		}
+
+		if (isCollapsible(c)) {
+			pendingSpace = false; // never keep a space before punctuation
+			tokenStart = -1;
+			const int p = punctPriority(c);
+			if (!inPunctRun || p > bestPriority) {
+				bestPriority = p;
+				bestPunct = c;
+			}
+			inPunctRun = true;
+			continue;
+		}
+
+		// Ordinary content character.
+		if (inPunctRun) {
+			out.append(bestPunct);
+			inPunctRun = false;
+			pendingSpace = true; // one space between punctuation and next word
+		}
+		if (pendingSpace) {
+			out.append(u' ');
+			pendingSpace = false;
+		}
+		if (tokenStart < 0)
+			tokenStart = out.size();
+		out.append(c);
+	}
+
+	if (inPunctRun)
+		out.append(bestPunct); // trailing punctuation at end of line
+
+	return out;
+}
+
+} // namespace
+
 TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 {
 	TextList sentences;
@@ -252,48 +412,16 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	constexpr int MIN_WORDS = 15;
 	constexpr int MAX_WORDS = 30;
 
-	static const QRegularExpression cleanupRe(R"(\s+|[\x{FFFD}"\x{201C}\x{201D}]+)");
-	static const QRegularExpression punctConflictRe(R"(([?!;])\s*[.]+|(?:[.]\s*)+([?!;]))");
-	static const QRegularExpression multiPeriodRe(R"((?:\.\s*){2,})");
-	static const QRegularExpression spaceBeforePunctRe(R"(\s+([.,!?;:]))");
-
 	static const QRegularExpression sentenceSplitRe(
 		R"((?<!\b[A-Z][a-z]{0,3}\.)(?<!\bi\.e\.)(?<!\be\.g\.)(?<!\betc\.)(?<!\b\d{1,3}\.)(?<=[.?!;\-\x{2013}\x{2014}])\s+|\x{2028})");
-	static const QRegularExpression abbrevDotRe(R"(\b[A-Z][a-z]{0,3}\.|\bi\.e\.|\be\.g\.|\betc\.)");
 
-	// Zero-allocation, character-preserving dot stripper
-	auto stripAbbreviationDots = [](const QString &text) -> QString {
-		QRegularExpressionMatchIterator it = abbrevDotRe.globalMatch(text);
-		if (!it.hasNext())
-			return text; // Fast-path: return unchanged copy/ref
-
-		QString result;
-		result.reserve(text.size());
-		int lastEnd = 0;
-		while (it.hasNext()) {
-			const QRegularExpressionMatch m = it.next();
-			result.append(QStringView(text).mid(lastEnd, m.capturedStart() - lastEnd));
-
-			// Append matched token without '.'
-			QStringView matched = m.capturedView(0);
-			for (const QChar c : matched) {
-				if (c != u'.')
-					result.append(c);
-			}
-			lastEnd = m.capturedEnd();
-		}
-		result.append(QStringView(text).mid(lastEnd));
-		return result;
-	};
-
-	// Zero-allocation word counter (O(N) character scan)
 	auto countWords = [](QStringView s) -> size_t {
 		size_t count = 0;
 		bool inWord = false;
 		for (const QChar c : s) {
-			if (c.isSpace()) {
+			if (c.isSpace())
 				inWord = false;
-			} else if (!inWord) {
+			else if (!inWord) {
 				inWord = true;
 				++count;
 			}
@@ -309,13 +437,15 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	};
 
 	struct RawSentence {
-		QString text;
+		QStringView text; // view into blockTexts[blockIdx] - kept alive below
 		float yTop;
 		float yBottom;
 		int blockIdx;
 	};
 
 	QList<RawSentence> rawList;
+	QList<QString> blockTexts; // owns each block's cleaned text; rawList views point into these
+	blockTexts.reserve(textBlockLines.size());
 
 	for (int blockIdx = 0; blockIdx < textBlockLines.size(); ++blockIdx) {
 		const TextList &block = textBlockLines[blockIdx];
@@ -331,7 +461,6 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		};
 
 		QString joined;
-		// Estimate average line length to reduce heap growth cycles
 		joined.reserve(lineCount * 60);
 
 		QList<LineSpan> lineSpans;
@@ -341,16 +470,7 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		const auto &yBottomList = block.yBottomList;
 
 		for (qsizetype i = 0; i < lineCount; ++i) {
-			QString line = block.strList[i];
-
-			// In-place regex cleanups
-			line.replace(cleanupRe, QStringLiteral(" "));
-			line.replace(punctConflictRe, QStringLiteral("\\1\\2"));
-			line.replace(multiPeriodRe, QStringLiteral("."));
-			line.replace(spaceBeforePunctRe, QStringLiteral("\\1"));
-
-			line = line.trimmed();
-			line = stripAbbreviationDots(line);
+			QString line = cleanLine(block.strList[i]).trimmed();
 			if (line.isEmpty())
 				continue;
 
@@ -374,17 +494,19 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		if (joined.isEmpty())
 			continue;
 
-		const QList<OffsetPiece> pieces = splitWithOffsets(joined, sentenceSplitRe);
+		blockTexts.append(std::move(joined));
+		const QString &ownedJoined = blockTexts.last();
+
+		const QList<OffsetPiece> pieces = splitWithOffsets(ownedJoined, sentenceSplitRe);
 
 		for (const OffsetPiece &piece : pieces) {
-			QStringView textSpan = QStringView(piece.text).trimmed();
+			QStringView textSpan =
+				QStringView(ownedJoined).mid(piece.start, piece.end - piece.start).trimmed();
 			if (textSpan.isEmpty())
 				continue;
 
-			float yTop = 0.0f;
-			float yBottom = 0.0f;
+			float yTop = 0.0f, yBottom = 0.0f;
 			bool foundAny = false;
-
 			for (const LineSpan &span : lineSpans) {
 				if (span.start < piece.end && span.end > piece.start) {
 					if (!foundAny) {
@@ -398,22 +520,20 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 				}
 			}
 
-			rawList.append({ textSpan.toString(), yTop, yBottom, blockIdx });
+			rawList.append({ textSpan, yTop, yBottom, blockIdx });
 		}
 	}
 
 	if (rawList.isEmpty())
 		return sentences;
 
-	// Pre-reserve sentence list buffers
 	sentences.strList.reserve(rawList.size());
 	sentences.yTopList.reserve(rawList.size());
 	sentences.yBottomList.reserve(rawList.size());
 
 	QString currentText;
 	currentText.reserve(256);
-	float currentYTop = 0.0f;
-	float currentYBottom = 0.0f;
+	float currentYTop = 0.0f, currentYBottom = 0.0f;
 	size_t currentWordCount = 0;
 	int currentBlockIdx = -1;
 	bool hasCurrent = false;
@@ -421,16 +541,12 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	auto flushCurrentGroup = [&]() {
 		if (!hasCurrent)
 			return;
-
 		QString finalText = currentText.trimmed();
-
 		if (!finalText.isEmpty() && !endsWithSentenceTerminator(finalText))
 			finalText.append(u'.');
-
 		sentences.strList.append(std::move(finalText));
 		sentences.yTopList.append(currentYTop);
 		sentences.yBottomList.append(currentYBottom);
-
 		hasCurrent = false;
 		currentText.clear();
 		currentWordCount = 0;
@@ -440,7 +556,7 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 		const size_t words = countWords(raw.text);
 
 		if (!hasCurrent) {
-			currentText = raw.text;
+			currentText = raw.text.toString();
 			currentYTop = raw.yTop;
 			currentYBottom = raw.yBottom;
 			currentWordCount = words;
@@ -456,7 +572,7 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 
 		if (preferBreakHere || wouldExceedMax) {
 			flushCurrentGroup();
-			currentText = raw.text;
+			currentText = raw.text.toString();
 			currentYTop = raw.yTop;
 			currentYBottom = raw.yBottom;
 			currentWordCount = words;
@@ -473,11 +589,10 @@ TextList PDFParser::getPageSentences(QList<TextList> &textBlockLines)
 	}
 
 	flushCurrentGroup();
-
 	return sentences;
 }
 
-void PDFParser::extractPageContents(int pageNumber, uint8_t genId)
+void PDFParser::extractPageContents(int pageNumber, uint32_t genId)
 {
 	fz_page *page = nullptr;
 	fz_stext_page *textPage = nullptr;
@@ -497,8 +612,10 @@ void PDFParser::extractPageContents(int pageNumber, uint8_t genId)
 		opts.flags |= FZ_STEXT_PRESERVE_IMAGES;
 		textPage = fz_new_stext_page_from_page(m_context, page, &opts);
 
-		extractBlockContents(textPage->first_block, sentences, images, topMargin, bottomMargin,
-							 minImageSize);
+		if (!m_genId->isStale(genId)) {
+			extractBlockContents(textPage->first_block, sentences, images, topMargin, bottomMargin,
+								 minImageSize, genId);
+		}
 	}
 	fz_always(m_context)
 	{
@@ -510,22 +627,31 @@ void PDFParser::extractPageContents(int pageNumber, uint8_t genId)
 		const char *errMsg = fz_caught_message(m_context);
 		QString errorString = QString::fromUtf8(errMsg);
 
-		emit pageExtractionFailed(pageNumber, errorString, genId);
+		if (m_genId->isStale(genId))
+			emit pageExtractionCancelled(pageNumber);
+		else
+			emit pageExtractionFailed(pageNumber, errorString, genId);
+
+		return;
 	}
 
 #ifdef TESTING
 	saveImagesToTestDirectory(images, pageNumber);
 #endif
 
-	// Get image ranges
-	QList<PlaybackSegment> segments;
-	getPlaybackSegments(sentences, images, segments);
-
-	emit pageExtracted(pageNumber, sentences.strList, images.imageList, segments, genId);
+	if (m_genId->isStale(genId)) {
+		emit pageExtractionCancelled(pageNumber);
+	} else {
+		// Get image ranges
+		QList<PlaybackSegment> segments;
+		getPlaybackSegments(sentences, images, segments);
+		emit pageExtracted(pageNumber, sentences.strList, images.imageList, segments, genId);
+	}
 }
 
 void PDFParser::extractBlockContents(fz_stext_block *block, TextList &sentences, ImageList &images,
-									 float topMargin, float bottomMargin, float minImageSize)
+									 float topMargin, float bottomMargin, float minImageSize,
+									 uint32_t genId)
 {
 	QList<TextList> pageLines;
 	ImageList blockImage;
@@ -553,6 +679,9 @@ void PDFParser::extractBlockContents(fz_stext_block *block, TextList &sentences,
 		default:
 			continue;
 		}
+
+		if (m_genId->isStale(genId))
+			return;
 	}
 
 	sentences = getPageSentences(pageLines);

@@ -6,6 +6,12 @@
 
 enum class ThreadType : uint8_t { PDFParser, TTSManager };
 
+struct ThreadContext {
+	QThread thread;
+	QObject worker;
+	std::atomic<int> pendingTasks{ 0 };
+};
+
 class ThreadManager : public QObject {
 	Q_OBJECT
 
@@ -14,15 +20,10 @@ public:
 	~ThreadManager();
 
 	void submitTask(ThreadType type, std::function<void()> task);
-	int queuedTaskCount(ThreadType type) const;
+	void shutdown();
 
 private:
 	void createThread(ThreadType type, const QString &name);
-	struct ThreadContext {
-		QThread thread;
-		QObject worker;
-		std::atomic<int> pendingTasks{ 0 };
-	};
 
 	QHash<ThreadType, ThreadContext *> m_threads;
 };

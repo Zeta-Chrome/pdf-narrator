@@ -1,6 +1,10 @@
 #include "app_controller.h"
+#include "cancellation_token.h"
 #include "model_downloader.h"
+#include "tts_manager.h"
 #include <QStandardPaths>
+#include <QGuiApplication>
+#include <unistd.h>
 
 #define SENTENCE_BREAK_PERIOD 250
 #define IMAGE_DISPLAY_PERIOD 3000
@@ -38,8 +42,10 @@ AppController::AppController(QObject *parent)
 	: QObject(parent)
 	, m_modelsDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/models")
 {
-	m_pdfParser = std::make_unique<PDFParser>();
-	m_ttsManager = std::make_unique<TTSManager>();
+	m_parseGenId = std::make_shared<GenerationID>();
+	m_synthesisGenId = std::make_shared<GenerationID>();
+	m_pdfParser = std::make_unique<PDFParser>(m_parseGenId);
+	m_ttsManager = std::make_unique<TTSManager>(m_synthesisGenId);
 	m_audioManager = std::make_unique<AudioManager>();
 	m_threadManager = std::make_unique<ThreadManager>();
 	m_modelDownloader = std::make_unique<ModelDownloader>(m_modelsDir.absolutePath());
@@ -61,10 +67,14 @@ AppController::AppController(QObject *parent)
 	connect(m_pdfParser.get(), &PDFParser::pageExtracted, this, &AppController::onPageExtracted);
 	connect(m_pdfParser.get(), &PDFParser::pageExtractionFailed, this,
 			&AppController::onPageExtractionFailed);
+	connect(m_pdfParser.get(), &PDFParser::pageExtractionCancelled, this,
+			&AppController::onPageExtractionCancelled);
 	connect(m_ttsManager.get(), &TTSManager::synthesisComplete, this,
 			&AppController::onSynthesisComplete);
 	connect(m_ttsManager.get(), &TTSManager::synthesisFailed, this,
 			&AppController::onSynthesisFailed);
+	connect(m_ttsManager.get(), &TTSManager::synthesisCancelled, this,
+			&AppController::onSynthesisCancelled);
 	connect(m_audioManager.get(), &AudioManager::speechFinished, this,
 			&AppController::onSpeechFinished);
 	connect(m_audioManager.get(), &AudioManager::musicFinished, this,
@@ -95,6 +105,7 @@ AppController::AppController(QObject *parent)
 					QTimer::singleShot(0, this, &AppController::initialize);
 				}
 			});
+
 	connect(this, &AppController::playbackStateChanged, this, [this]() {
 		if (m_playbackState == PlaybackState::PLAYING)
 			m_foregroundService->start("Reading", QString());
@@ -106,6 +117,8 @@ AppController::AppController(QObject *parent)
 		if (m_playbackState == PlaybackState::PLAYING)
 			m_foregroundService->updateNotification("Reading", sentence);
 	});
+
+	QObject::connect(qGuiApp, &QGuiApplication::aboutToQuit, []() { _exit(0); });
 
 	checkDownloads();
 
@@ -304,9 +317,14 @@ void AppController::setTtsSpeaker(int speakerId)
 	drivePlayback();
 }
 
+void AppController::cancelPageParsing()
+{
+	m_parseGenId->increment();
+}
+
 void AppController::cancelSynthesis()
 {
-	m_synthesisGenId++;
+	m_synthesisGenId->increment();
 	m_synthesizing.clear();
 	m_synthesisTaskInFlight = false;
 }
@@ -336,10 +354,8 @@ void AppController::resetState()
 	m_synthesisFinished = false;
 	m_seekDirection = SeekDirection::NONE;
 
-	m_parseGenId++;
-	m_synthesisGenId++;
-	m_synthesizing.clear();
-	m_synthesisTaskInFlight = false;
+	cancelPageParsing();
+	cancelSynthesis();
 
 	m_imageId = 0;
 	emit imageIdChanged();
@@ -450,9 +466,9 @@ void AppController::onPdfLoadFailed(const QString &error)
 
 void AppController::parsePage(uint16_t page)
 {
-	uint8_t genId = m_parseGenId.load(std::memory_order_relaxed);
+	uint8_t genId = m_parseGenId->get();
 	m_threadManager->submitTask(ThreadType::PDFParser, [this, page, genId]() {
-		if (genId != m_parseGenId.load(std::memory_order_relaxed))
+		if (m_parseGenId->isStale(genId))
 			return;
 
 		m_pdfParser->extractPageContents(page, genId);
@@ -474,9 +490,9 @@ void AppController::parseTillPage(uint16_t page)
 
 void AppController::onPageExtracted(int pageNumber, const QStringList &sentences,
 									const QList<QImage> &images,
-									const QList<PlaybackSegment> &segments, uint8_t genId)
+									const QList<PlaybackSegment> &segments, uint32_t genId)
 {
-	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
+	if (m_parseGenId->isStale(genId)) {
 		m_isBusy = false;
 		emit isBusyChanged();
 
@@ -508,9 +524,9 @@ void AppController::onPageExtracted(int pageNumber, const QStringList &sentences
 	drivePlayback();
 }
 
-void AppController::onPageExtractionFailed(int pageNumber, const QString &error, uint8_t genId)
+void AppController::onPageExtractionFailed(int pageNumber, const QString &error, uint32_t genId)
 {
-	if (genId != m_parseGenId.load(std::memory_order_relaxed)) {
+	if (m_parseGenId->isStale(genId)) {
 		m_isBusy = false;
 		emit isBusyChanged();
 
@@ -529,6 +545,15 @@ void AppController::onPageExtractionFailed(int pageNumber, const QString &error,
 		m_seekDirection = SeekDirection::NONE;
 		return;
 	}
+
+	driveSynthesis();
+	drivePlayback();
+}
+
+void AppController::onPageExtractionCancelled(int /*pageNumber*/)
+{
+	m_isBusy = false;
+	emit isBusyChanged();
 
 	driveSynthesis();
 	drivePlayback();
@@ -566,10 +591,10 @@ void AppController::driveSynthesis()
 	uint16_t page = m_synthesisPos.pageNo;
 	uint16_t sentenceIdx = m_synthesisPos.sentenceIdx;
 	QString sentence = m_pageDataMap[page].sentences[sentenceIdx];
-	uint8_t genId = m_synthesisGenId.load(std::memory_order_relaxed);
+	uint8_t genId = m_synthesisGenId->get();
 	m_threadManager->submitTask(ThreadType::TTSManager, [this, sentence, page, sentenceIdx,
 														 genId]() {
-		if (genId != m_synthesisGenId.load(std::memory_order_relaxed))
+		if (m_synthesisGenId->isStale(genId))
 			return;
 
 		m_ttsManager->synthesizeText(sentence, page, sentenceIdx, m_appState.speakerId,
@@ -583,9 +608,9 @@ void AppController::driveSynthesis()
 }
 
 void AppController::onSynthesisComplete(uint16_t pageNumber, uint16_t sentenceIdx,
-										const QByteArray &audioData, int sampleRate, uint8_t genId)
+										const QByteArray &audioData, int sampleRate, uint32_t genId)
 {
-	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
+	if (m_synthesisGenId->isStale(genId)) {
 		m_isBusy = false;
 		emit isBusyChanged();
 
@@ -610,9 +635,9 @@ void AppController::onSynthesisComplete(uint16_t pageNumber, uint16_t sentenceId
 }
 
 void AppController::onSynthesisFailed(uint16_t pageNumber, uint16_t sentenceIdx,
-									  const QString &error, uint8_t genId)
+									  const QString &error, uint32_t genId)
 {
-	if (genId != m_synthesisGenId.load(std::memory_order_relaxed)) {
+	if (m_synthesisGenId->isStale(genId)) {
 		m_isBusy = false;
 		emit isBusyChanged();
 
@@ -627,6 +652,15 @@ void AppController::onSynthesisFailed(uint16_t pageNumber, uint16_t sentenceIdx,
 		.state = LoadState::FAILED, .pos = { pageNumber, sentenceIdx }, .errorMessage = error });
 	m_lookAheadCount++;
 
+	m_isBusy = false;
+	emit isBusyChanged();
+
+	driveSynthesis();
+	drivePlayback();
+}
+
+void AppController::onSynthesisCancelled(int /*pageNumber*/, int /*sentenceId*/)
+{
 	m_isBusy = false;
 	emit isBusyChanged();
 
@@ -818,7 +852,7 @@ void AppController::changeSynthesisPos(Position pos)
 	if (!isPositionValid(m_synthesisPos))
 		nextPosition(m_synthesisPos);
 
-	m_parseGenId++;
+	cancelPageParsing();
 	cancelSynthesis();
 
 	driveSynthesis();

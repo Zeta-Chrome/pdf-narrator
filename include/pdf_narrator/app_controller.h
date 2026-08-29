@@ -11,6 +11,7 @@
 #include <QQueue>
 #include <QTimer>
 #include <QDir>
+#include <memory>
 #include <qqmlregistration.h>
 #include <QNetworkAccessManager>
 #include <qtmetamacros.h>
@@ -244,12 +245,14 @@ private slots:
 	void onPdfLoaded(int pageCount, const QVector<uint16_t> &sentenceCounts);
 	void onPdfLoadFailed(const QString &error);
 	void onPageExtracted(int pageNumber, const QStringList &sentences, const QList<QImage> &images,
-						 const QList<PlaybackSegment> &segments, uint8_t genId);
-	void onPageExtractionFailed(int pageNumber, const QString &error, uint8_t genId);
+						 const QList<PlaybackSegment> &segments, uint32_t genId);
+	void onPageExtractionFailed(int pageNumber, const QString &error, uint32_t genId);
+	void onPageExtractionCancelled(int pageNumber);
 	void onSynthesisComplete(uint16_t page, uint16_t sentenceIdx, const QByteArray &audioData,
-							 int sampleRate, uint8_t genId);
+							 int sampleRate, uint32_t genId);
 	void onSynthesisFailed(uint16_t page, uint16_t sentenceIdx, const QString &error,
-						   uint8_t genId);
+						   uint32_t genId);
+	void onSynthesisCancelled(int pageNumber, int sentenceId);
 	void onSpeechFinished(uint16_t page, uint16_t sentenceIdx);
 	void onMusicFinished();
 
@@ -259,9 +262,7 @@ private:
 	void initializeTts();
 	void initialize();
 	void applyTtsModel(int modelId);
-	// Cancels whatever synthesis request is currently outstanding (if any)
-	// and resets bookkeeping so a fresh one can be submitted. Safe to call
-	// even when nothing is actually in flight.
+	void cancelPageParsing();
 	void cancelSynthesis();
 	bool prevPosition(Position &pos);
 	bool nextPosition(Position &pos);
@@ -297,8 +298,8 @@ private:
 	std::optional<QImage> m_coverImage;
 	std::optional<QImage> m_currentImage;
 
-	std::atomic<uint8_t> m_parseGenId{ 0 };
-	std::atomic<uint8_t> m_synthesisGenId{ 0 };
+	std::shared_ptr<GenerationID> m_parseGenId;
+	std::shared_ptr<GenerationID> m_synthesisGenId;
 	uint16_t m_totalPages{ 0 };
 	uint16_t m_parsePage{ 0 };
 	uint32_t m_imageId{ 0 };

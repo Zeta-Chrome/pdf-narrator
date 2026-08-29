@@ -1,16 +1,15 @@
 #include "audio_manager.h"
 #include <QAudioFormat>
 #include <QMediaDevices>
-#include <QAudioOutput>
 #include <QDebug>
-#include <qaudio.h>
 
 AudioManager::AudioManager(QObject *parent)
 	: QObject(parent)
 {
 	m_musicPlayer = std::make_unique<QMediaPlayer>();
-	QAudioOutput *audio = new QAudioOutput(this);
-	m_musicPlayer->setAudioOutput(audio);
+	m_musicAudioOutput = std::make_unique<QAudioOutput>();
+	m_musicAudioOutput->setVolume(m_musicVolume);
+	m_musicPlayer->setAudioOutput(m_musicAudioOutput.get());
 
 	connect(m_musicPlayer.get(), &QMediaPlayer::mediaStatusChanged, this,
 			&AudioManager::onMusicStateChanged);
@@ -22,14 +21,59 @@ AudioManager::~AudioManager()
 	stopSpeech();
 }
 
+void AudioManager::stopSpeech()
+{
+	QMutexLocker locker(&m_mutex);
+
+	if (m_audioSink) {
+		m_audioSink->stop();
+		m_audioSink.reset();
+	}
+	if (m_audioBuffer) {
+		m_audioBuffer->close();
+		m_audioBuffer.reset();
+	}
+	m_isPaused = false;
+	m_currentAudioData.clear();
+}
+
+void AudioManager::stopMusic()
+{
+	QMutexLocker locker(&m_mutex);
+
+	if (m_musicPlayer && m_musicPlayer->playbackState() != QMediaPlayer::StoppedState) {
+		m_musicPlayer->stop();
+	}
+}
+
+void AudioManager::playMusic(const QString &musicFilePath)
+{
+	QMutexLocker locker(&m_mutex);
+
+	m_musicPlayer->setSource(musicFilePath);
+	if (m_musicAudioOutput) {
+		m_musicAudioOutput->setVolume(m_musicVolume);
+	}
+
+	if (!m_isMusicEnabled)
+		return;
+
+	m_musicPlayer->play();
+}
+
 void AudioManager::playSpeech(QByteArray audioData, int sampleRate, uint16_t pageNo,
 							  uint16_t sentenceIdx)
 {
 	QMutexLocker locker(&m_mutex);
 
-	if (m_audioSink && m_audioSink->state() != QAudio::StoppedState && m_audioSink &&
-		m_audioSink->state() != QAudio::IdleState) {
+	// Stop and clear previous buffer before allocating new sink
+	if (m_audioSink) {
 		m_audioSink->stop();
+		m_audioSink.reset();
+	}
+	if (m_audioBuffer) {
+		m_audioBuffer->close();
+		m_audioBuffer.reset();
 	}
 
 	QAudioFormat format;
@@ -39,7 +83,6 @@ void AudioManager::playSpeech(QByteArray audioData, int sampleRate, uint16_t pag
 
 	QAudioDevice deviceInfo = QMediaDevices::defaultAudioOutput();
 	if (!deviceInfo.isFormatSupported(format)) {
-		qWarning() << "Audio format not supported, trying to find nearest";
 		format = deviceInfo.preferredFormat();
 	}
 
@@ -59,35 +102,17 @@ void AudioManager::playSpeech(QByteArray audioData, int sampleRate, uint16_t pag
 	m_isPaused = false;
 }
 
-void AudioManager::playMusic(const QString &musicFilePath)
-{
-	QMutexLocker locker(&m_mutex);
-
-	m_musicPlayer->setSource(musicFilePath);
-	m_musicPlayer->audioOutput()->setVolume(m_musicVolume);
-
-	if (!m_isMusicEnabled)
-		return;
-
-	m_musicPlayer->play();
-}
-
 void AudioManager::toggleMusic()
 {
+	QMutexLocker locker(&m_mutex);
+	if (!m_musicPlayer)
+		return;
+
 	m_isMusicEnabled = !m_isMusicEnabled;
 	if (m_isMusicEnabled) {
 		m_musicPlayer->play();
 	} else {
 		m_musicPlayer->pause();
-	}
-}
-
-void AudioManager::stopMusic()
-{
-	QMutexLocker locker(&m_mutex);
-
-	if (m_musicPlayer->playbackState() != QMediaPlayer::StoppedState) {
-		m_musicPlayer->stop();
 	}
 }
 
@@ -100,7 +125,7 @@ void AudioManager::pause()
 		m_isPaused = true;
 	}
 
-	if (!m_isMusicEnabled) {
+	if (!m_isMusicEnabled || !m_musicPlayer) {
 		return;
 	}
 
@@ -121,7 +146,7 @@ void AudioManager::resume()
 		m_isPaused = false;
 	}
 
-	if (!m_isMusicEnabled) {
+	if (!m_isMusicEnabled || !m_musicPlayer) {
 		return;
 	}
 
@@ -130,31 +155,13 @@ void AudioManager::resume()
 	}
 }
 
-void AudioManager::stopSpeech()
-{
-	QMutexLocker locker(&m_mutex);
-
-	if (m_audioSink) {
-		m_audioSink->stop();
-		m_audioSink.reset();
-	}
-
-	if (m_audioBuffer) {
-		m_audioBuffer->close();
-		m_audioBuffer.reset();
-	}
-
-	m_isPaused = false;
-	m_currentAudioData.clear();
-}
-
 void AudioManager::setMusicVolume(float volume)
 {
 	QMutexLocker locker(&m_mutex);
 
 	m_musicVolume = qBound(0.0f, volume, 1.0f);
-	if (m_musicPlayer && m_musicPlayer->audioOutput()) {
-		m_musicPlayer->audioOutput()->setVolume(m_musicVolume);
+	if (m_musicAudioOutput) {
+		m_musicAudioOutput->setVolume(m_musicVolume);
 	}
 }
 
@@ -162,8 +169,6 @@ void AudioManager::onSpeechStateChanged(QAudio::State state, uint16_t pageNo, ui
 {
 	if (state == QAudio::IdleState) {
 		emit speechFinished(pageNo, sentenceIdx);
-	} else if (state == QAudio::ActiveState) {
-		// Speech is playing
 	}
 }
 

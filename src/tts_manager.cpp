@@ -4,10 +4,17 @@
 #include <QFile>
 #include <QElapsedTimer>
 #include <QThread>
+#include <utility>
 
-TTSManager::TTSManager(QObject *parent)
+struct TaskCallbackContext {
+	GenerationID *globalGenId;
+	uint32_t taskGenId;
+};
+
+TTSManager::TTSManager(std::shared_ptr<GenerationID> genId, QObject *parent)
 	: QObject(parent)
 	, m_tts(nullptr)
+	, m_genId(std::move(genId))
 {
 }
 
@@ -32,7 +39,6 @@ void TTSManager::initialize(const QString &modelPath)
 	// Identify Model Family
 	bool isKokoro = dirName.contains("kokoro");
 	bool isKitten = dirName.contains("kitten");
-	bool isMatcha = dirName.contains("matcha");
 	bool isMelo = dirName.contains("melo");
 	bool isVits = dirName.contains("vits") || isMelo;
 
@@ -45,24 +51,6 @@ void TTSManager::initialize(const QString &modelPath)
 
 	QString modelFile;
 	QString vocoderFile;
-
-	if (isMatcha) {
-		// Optional: Find separate vocoder if present
-		auto vocoderIt = std::find_if(onnxFiles.begin(), onnxFiles.end(), [](const QString &f) {
-			QString lower = f.toLower();
-			return lower.contains("vocoder") || lower.contains("hifi");
-		});
-
-		if (vocoderIt != onnxFiles.end()) {
-			vocoderFile = modelDir.filePath(*vocoderIt);
-			onnxFiles.erase(vocoderIt);
-		}
-
-		if (onnxFiles.isEmpty()) {
-			emit ttsInitializationFailed("Matcha acoustic model .onnx not found");
-			return;
-		}
-	}
 
 	// Prefer .onnx (e.g. "model.onnx" or "name.onnx" without .int8/.fp16)
 	auto pureOnnxIt = std::find_if(onnxFiles.begin(), onnxFiles.end(), [](const QString &f) {
@@ -136,16 +124,6 @@ void TTSManager::initialize(const QString &modelPath)
 		config.model.kitten.tokens = tokensBa.constData();
 		config.model.kitten.voices = voicesBa.constData();
 		config.model.kitten.data_dir = dataBa.constData();
-	} else if (isMatcha) {
-		engineType = "Matcha-TTS";
-		config.model.matcha.acoustic_model = modelBa.constData();
-		if (!vocoderBa.isEmpty())
-			config.model.matcha.vocoder = vocoderBa.constData();
-		config.model.matcha.tokens = tokensBa.constData();
-		if (!dataBa.isEmpty())
-			config.model.matcha.data_dir = dataBa.constData();
-		if (!lexiconBa.isEmpty())
-			config.model.matcha.lexicon = lexiconBa.constData();
 	} else if (isVits) {
 		engineType = isMelo ? "MeloTTS (VITS)" : "Piper (VITS)";
 		config.model.vits.model = modelBa.constData();
@@ -190,8 +168,18 @@ void TTSManager::shutdown()
 	m_isInitialized = false;
 }
 
+int32_t TTSManager::progressCallback(const float * /*samples*/, int32_t /*num_samples*/,
+									 float /*progress*/, void *arg)
+{
+	auto *ctx = static_cast<TaskCallbackContext *>(arg);
+	if (!ctx || !ctx->globalGenId)
+		return 1;
+
+	return !ctx->globalGenId->isStale(ctx->taskGenId);
+}
+
 void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenceId, int speakerId,
-								float speed, uint8_t genId)
+								float speed, uint32_t genId)
 {
 	if (!m_isInitialized || !m_tts) {
 		emit synthesisFailed(pageNumber, sentenceId, "TTS not initialized", genId);
@@ -213,21 +201,20 @@ void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenc
 		QElapsedTimer t;
 		t.start();
 
+		TaskCallbackContext cbCtx{ m_genId.get(), genId };
 		const SherpaOnnxGeneratedAudio *audio = SherpaOnnxOfflineTtsGenerateWithConfig(
-			m_tts, textUtf8.constData(), &genConfig, nullptr, nullptr);
+			m_tts, textUtf8.constData(), &genConfig, progressCallback, &cbCtx);
+
+		if (m_genId->isStale(genId)) {
+			SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
+			emit synthesisCancelled(pageNumber, sentenceId);
+			return;
+		}
 
 		float gen_dur = (float)t.elapsed() / 1000;
 		float audio_dur = (float)audio->n / (float)audio->sample_rate;
 		qInfo() << "Audio: " << audio_dur << "\tGen" << gen_dur << "\tRTF:" << gen_dur / audio_dur;
 		qInfo() << "Text: " << text << "\n";
-
-		if (!audio || audio->n == 0) {
-			emit synthesisFailed(pageNumber, sentenceId, "TTS generated no audio", genId);
-			if (audio) {
-				SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
-			}
-			return;
-		}
 
 		// Copy audio samples to QByteArray
 		QByteArray audioData;
@@ -240,9 +227,15 @@ void TTSManager::synthesizeText(const QString &text, int pageNumber, int sentenc
 		SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
 
 		emit synthesisComplete(pageNumber, sentenceId, audioData, sampleRate, genId);
+
 	} catch (const std::exception &e) {
 		QString error = QString("TTS synthesis failed: %1").arg(e.what());
 		qWarning() << error;
-		emit synthesisFailed(pageNumber, sentenceId, error, genId);
+
+		if (m_genId->isStale(genId))
+			emit synthesisCancelled(pageNumber, sentenceId);
+		else
+			emit synthesisFailed(pageNumber, sentenceId, error, genId);
+		return;
 	}
 }
